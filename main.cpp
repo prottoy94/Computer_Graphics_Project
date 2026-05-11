@@ -1,5 +1,5 @@
 // ================================================================
-//  AIUB Campus Final – Complete Scene with Seasons
+//  AIUB Campus Final – Complete Scene with Seasons & FIREWORKS
 //  CSC 3224 – Computer Graphics Project
 //
 //  Features:
@@ -20,6 +20,7 @@
 //    • WINTER MODE ('w') – falling snow                  [Shajmin]
 //    • RAINY MODE ('r') – raindrops, umbrellas, gray sky, wet ground
 //    • SUMMER MODE ('g') – mangoes, jackfruits, heat haze, stall, birds
+//    • FIREWORKS MODE ('f') – spectacular fireworks display!
 //
 //  Draw order (painter's algorithm, back → front):
 //    1. Sky
@@ -33,6 +34,7 @@
 //    9. Annex-9
 //   10. C-Building
 //   11. D-Building
+//   12. Fireworks (drawn on top)
 //
 //  Coordinate space : -1.0 to +1.0 (X and Y)
 //  Window size      : 1400 x 800
@@ -41,6 +43,12 @@
 #include <GL/freeglut.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>      // ← ADD THIS LINE for sprintf, printf, etc.
+#include <string.h>     // ← ADD THIS LINE for strcat, strlen, etc.
+
+// Add MCI sound support for fireworks
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 
 #define PI 3.14159265f
 #define MAX_FALLING 85
@@ -112,6 +120,860 @@ static int isDay = 1;           // 1 = day, 0 = night
 static float breezeSpeed = 0.016f;
 static float cloudScale = 1.0f;   // 1.0 = default size, +/- keys adjust this
 static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
+
+// ── [FIREWORKS SYSTEM] ─────────────────────────────────────────────
+// Firework tunables
+#define FW_MAX_ROCKETS    24      // max simultaneous rockets in flight
+#define FW_MAX_PARTICLES  4200    // total particle pool (all bursts combined)
+#define FW_SOUND_DURATION 5.0f   // seconds — matches fireWorkSoundV3.m4a length
+
+// Rocket types
+enum FWRocketType {
+    FW_CHRYSANTHEMUM = 0,  // dense full sphere — classic gold
+    FW_WILLOW,             // drooping long trails
+    FW_RING,               // perfect ring / double ring
+    FW_COMET,              // tight fast burst with long comet tail
+    FW_CROSSETTE,          // splits into 4 sub-shells mid-air
+    FW_STROBE,             // flashing white sparkle cloud
+    FW_PEONY,              // large sphere, petals fade outward
+    FW_TYPE_COUNT
+};
+
+// Launch sites (world coordinates)
+struct FWLaunchSite {
+    float x, y;
+    int   preferType;   // -1 = random
+};
+
+static const FWLaunchSite FW_SITES[] = {
+    // D-Building rooftop — centre and flanks
+    {  0.22f,  0.530f, FW_CHRYSANTHEMUM },
+    { -0.02f,  0.535f, FW_WILLOW        },
+    {  0.48f,  0.528f, FW_PEONY         },
+    // C-Building antenna tip
+    { -0.715f, 0.580f, FW_RING          },
+    // Annex-9 roof
+    {  0.16f,  0.100f, FW_COMET         },
+    // Left background buildings (tall ones)
+    { -0.94f,  0.490f, FW_CROSSETTE     },
+    { -0.68f,  0.375f, FW_STROBE        },
+    { -0.82f,  0.440f, FW_CHRYSANTHEMUM },
+    // Right background area
+    {  0.88f,  0.280f, FW_WILLOW        },
+    // Top-row lamp posts as footpath launchers
+    { -0.38f, -0.640f, FW_COMET         },
+    {  0.34f, -0.640f, FW_RING          },
+    {  0.84f, -0.640f, FW_PEONY         },
+    // Bottom-row lamp posts
+    { -0.67f, -0.920f, FW_STROBE        },
+    {  0.59f, -0.920f, FW_CROSSETTE     },
+};
+static const int FW_SITE_COUNT = (int)(sizeof(FW_SITES) / sizeof(FW_SITES[0]));
+
+// Per-particle state
+struct FWParticle {
+    float x,  y;        // world position
+    float vx, vy;       // velocity
+    float ax, ay;       // acceleration (gravity + drag)
+    float life;         // remaining life 0..1
+    float decay;        // life lost per tick
+    float size;         // render radius
+    unsigned char r, g, b;
+    unsigned char trailR, trailG, trailB;
+    bool  active;
+    bool  isTrail;      // true = launch smoke trail
+    bool  isSpark;      // tiny secondary sparkle
+    int   strobePhase;  // for FW_STROBE flicker
+};
+
+// Per-rocket state
+struct FWRocket {
+    float x,  y;        // current position
+    float tx, ty;       // target burst position
+    float vx, vy;       // ascent velocity
+    float life;         // 0..1  (1=just launched, 0=burst)
+    bool  active;
+    bool  hasBurst;
+    FWRocketType type;
+    // colour of this rocket's burst
+    unsigned char r, g, b;
+    unsigned char r2, g2, b2;   // secondary colour (ring / double)
+    int  siteIdx;               // which launch site
+    float trailTimer;           // smoke-puff spawn timer
+};
+
+// Global firework state
+static bool  fwActive        = false;  // master on/off
+static float fwTimer         = 0.0f;   // seconds elapsed since 'f' pressed
+static float fwLaunchTimer   = 0.0f;   // countdown to next rocket launch
+static int   fwLaunchIdx     = 0;      // next launch site index
+static int   fwSoundPlaying  = 0;
+
+static FWRocket   fwRockets  [FW_MAX_ROCKETS];
+static FWParticle fwParticles[FW_MAX_PARTICLES];
+
+// Screen flash for fireworks
+static float fwFlashAlpha = 0.0f;   // 0..1, decays each frame
+
+// Tiny LCG for firework randomness (separate from petalSeed)
+static unsigned int fwSeed = 0xDEADBEEFu;
+static float fwRand() {
+    fwSeed = fwSeed * 1664525u + 1013904223u;
+    return (float)(fwSeed & 0x7FFFu) / 32767.0f;
+}
+static float fwRandSym() { return fwRand() * 2.0f - 1.0f; }  // -1..+1
+
+// Colour palette (7 themed palettes, one per rocket type)
+static void fwPickColour(FWRocketType type,
+                          unsigned char &r,  unsigned char &g,  unsigned char &b,
+                          unsigned char &r2, unsigned char &g2, unsigned char &b2)
+{
+    // Each type gets a distinct gorgeous palette
+    switch (type) {
+    case FW_CHRYSANTHEMUM:
+        // Gold / amber cascade
+        r=255; g=200; b= 40;   r2=255; g2=140; b2= 10;  break;
+    case FW_WILLOW:
+        // Emerald green with silver tips
+        r= 80; g=240; b=100;   r2=220; g2=255; b2=220;  break;
+    case FW_RING:
+        // Cyan / electric blue double ring
+        r= 30; g=220; b=255;   r2=160; g2= 60; b2=255;  break;
+    case FW_COMET:
+        // Crimson / hot white core
+        r=255; g= 60; b= 40;   r2=255; g2=240; b2=200;  break;
+    case FW_CROSSETTE:
+        // Violet / magenta split
+        r=220; g= 50; b=220;   r2=255; g2=130; b2=200;  break;
+    case FW_STROBE:
+        // Pure white strobe flash
+        r=255; g=255; b=255;   r2=200; g2=220; b2=255;  break;
+    case FW_PEONY:
+        // Rose / coral large sphere
+        r=255; g= 80; b=120;   r2=255; g2=180; b2= 80;  break;
+    default:
+        r=255; g=255; b=100;   r2=255; g2=200; b2= 60;  break;
+    }
+    // Randomise brightness a bit
+    float br = 0.75f + fwRand() * 0.25f;
+    r  = (unsigned char)(r  * br);
+    g  = (unsigned char)(g  * br);
+    b  = (unsigned char)(b  * br);
+}
+
+// Spawn helpers
+static FWParticle* fwAllocParticle() {
+    // Find first inactive slot — cycle through pool
+    static int cursor = 0;
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        int idx = (cursor + i) % FW_MAX_PARTICLES;
+        if (!fwParticles[idx].active) {
+            cursor = (idx + 1) % FW_MAX_PARTICLES;
+            return &fwParticles[idx];
+        }
+    }
+    // Pool full — evict the oldest (lowest life)
+    int oldest = 0;
+    float minLife = fwParticles[0].life;
+    for (int i = 1; i < FW_MAX_PARTICLES; i++) {
+        if (fwParticles[i].life < minLife) { minLife = fwParticles[i].life; oldest = i; }
+    }
+    return &fwParticles[oldest];
+}
+
+// Spawn one launch-trail smoke puff
+static void fwSpawnTrailPuff(float x, float y,
+                              unsigned char r, unsigned char g, unsigned char b)
+{
+    FWParticle *p = fwAllocParticle();
+    p->x = x + fwRandSym() * 0.008f;
+    p->y = y + fwRandSym() * 0.004f;
+    p->vx = fwRandSym() * 0.0012f;
+    p->vy = -0.0018f - fwRand() * 0.0025f;  // drifts slightly downward (smoke)
+    p->ax = 0.0f;
+    p->ay = 0.0002f;  // very gentle upward correction (smoke rises)
+    p->life  = 0.55f + fwRand() * 0.30f;
+    p->decay = 0.022f + fwRand() * 0.018f;
+    p->size  = 0.006f + fwRand() * 0.009f;
+    p->r = r; p->g = g; p->b = b;
+    p->isTrail = true;
+    p->isSpark  = false;
+    p->active   = true;
+    p->strobePhase = 0;
+}
+
+// Trigger screen flash
+static void fwTriggerFlash() {
+    fwFlashAlpha = fminf(1.0f, fwFlashAlpha + 0.35f);
+}
+
+// Burst — emits N particles for a given firework type
+static void fwBurst(float cx, float cy, FWRocketType type,
+                     unsigned char r,  unsigned char g,  unsigned char b,
+                     unsigned char r2, unsigned char g2, unsigned char b2)
+{
+    fwTriggerFlash();  // Flash when rocket bursts!
+
+    float asp = 1400.0f / 800.0f;  // fixed aspect for radius correction
+
+    // Base particle count per type
+    int count = 0;
+    switch(type) {
+        case FW_CHRYSANTHEMUM: count = 240; break;
+        case FW_WILLOW:        count = 180; break;
+        case FW_RING:          count = 120; break;
+        case FW_COMET:         count = 140; break;
+        case FW_CROSSETTE:     count = 160; break;
+        case FW_STROBE:        count = 200; break;
+        case FW_PEONY:         count = 260; break;
+        default:               count = 180; break;
+    }
+
+    for (int i = 0; i < count; i++) {
+        FWParticle *p = fwAllocParticle();
+        float angle, speed, life, decay, sz;
+        bool isSpark = false;
+
+        switch(type) {
+        case FW_CHRYSANTHEMUM:
+            angle = fwRand() * 2.0f * PI;
+            speed = 0.0080f + fwRand() * 0.0100f;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = 0.0f;
+            p->ay = -0.00025f;  // Normal gravity
+            life  = 0.55f + fwRand() * 0.20f;   // Balanced life
+            decay = 0.035f + fwRand() * 0.020f; // Moderate decay
+            sz    = 0.004f + fwRand() * 0.004f;
+            p->r  = r;  p->g  = g;  p->b  = b;
+            p->trailR = (unsigned char)(r*0.6f);
+            p->trailG = (unsigned char)(g*0.4f);
+            p->trailB = 10;
+            isSpark = (fwRand() < 0.15f);
+            break;
+
+        case FW_WILLOW:
+            angle = fwRand() * 2.0f * PI;
+            speed = 0.0060f + fwRand() * 0.0120f;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = fwRandSym() * 0.00005f;
+            p->ay = -0.00060f;  // Slightly higher gravity for willow effect
+            life  = 0.65f + fwRand() * 0.15f;   // Balanced life
+            decay = 0.028f + fwRand() * 0.018f; // Moderate decay
+            sz    = 0.003f + fwRand() * 0.003f;
+            p->r  = r;  p->g  = g;  p->b  = b;
+            p->trailR = 40; p->trailG = 140; p->trailB = 40;
+            isSpark = (fwRand() < 0.10f);
+            break;
+
+        case FW_RING: {
+            bool isOuter = (i < count / 2);
+            float ringR  = isOuter ? 1.0f : 0.55f;
+            angle = (isOuter ? (float)i / (count/2) : fwRand()) * 2.0f * PI;
+            speed = 0.0120f * ringR;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = 0.0f;
+            p->ay = -0.00015f;  // Light gravity for ring shape
+            life  = 0.50f + fwRand() * 0.20f;   // Balanced life
+            decay = 0.032f + fwRand() * 0.022f; // Moderate decay
+            sz    = 0.005f + fwRand() * 0.003f;
+            if (isOuter) { p->r=r; p->g=g; p->b=b; }
+            else          { p->r=r2; p->g=g2; p->b=b2; }
+            p->trailR = 20; p->trailG = 80; p->trailB = 160;
+            isSpark = false;
+            break;
+        }
+
+        case FW_COMET: {
+            bool isHead = (fwRand() < 0.70f);
+            if (isHead) {
+                angle = fwRandSym() * 0.55f;
+                speed = 0.0150f + fwRand() * 0.0080f;
+                float dir = PI * 0.5f + fwRandSym() * 0.30f;
+                p->vx = cosf(dir + angle) * speed / asp;
+                p->vy = sinf(dir + angle) * speed;
+            } else {
+                angle = fwRand() * 2.0f * PI;
+                speed = 0.0035f + fwRand() * 0.0060f;
+                p->vx = cosf(angle) * speed / asp;
+                p->vy = sinf(angle) * speed;
+            }
+            p->ax = 0.0f;
+            p->ay = -0.00035f;
+            life  = 0.45f + fwRand() * 0.25f;   // Balanced life
+            decay = 0.040f + fwRand() * 0.025f; // Moderate decay
+            sz    = isHead ? (0.005f + fwRand() * 0.006f)
+                           : (0.003f + fwRand() * 0.003f);
+            p->r = isHead ? r2 : r;
+            p->g = isHead ? g2 : g;
+            p->b = isHead ? b2 : b;
+            p->trailR = 200; p->trailG = 50; p->trailB = 20;
+            isSpark = (fwRand() < 0.20f);
+            break;
+        }
+
+        case FW_CROSSETTE: {
+            int group = (i * 4) / count;
+            float groupAngle = group * PI * 0.5f + PI * 0.25f;
+            float spread = fwRandSym() * 0.50f;
+            float dist   = 0.0055f + fwRand() * 0.0095f;
+            angle = groupAngle + spread;
+            speed = dist;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = 0.0f;
+            p->ay = -0.00028f;
+            life  = 0.52f + fwRand() * 0.22f;   // Balanced life
+            decay = 0.035f + fwRand() * 0.020f; // Moderate decay
+            sz    = 0.004f + fwRand() * 0.003f;
+            if (group % 2 == 0) { p->r=r;  p->g=g;  p->b=b;  }
+            else                 { p->r=r2; p->g=g2; p->b=b2; }
+            p->trailR = 180; p->trailG = 40; p->trailB = 200;
+            isSpark = (fwRand() < 0.12f);
+            break;
+        }
+
+        case FW_STROBE:
+            angle = fwRand() * 2.0f * PI;
+            speed = 0.004f + fwRand() * 0.012f;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = 0.0f;
+            p->ay = -0.00020f;
+            life  = 0.48f + fwRand() * 0.28f;   // Balanced life
+            decay = 0.038f + fwRand() * 0.022f; // Moderate decay
+            sz    = 0.003f + fwRand() * 0.005f;
+            p->r = 255; p->g = 255; p->b = 255;
+            p->trailR = 180; p->trailG = 200; p->trailB = 255;
+            p->strobePhase = (int)(fwRand() * 8.0f);
+            isSpark = false;
+            break;
+
+        case FW_PEONY:
+            angle = fwRand() * 2.0f * PI;
+            speed = 0.0050f + fabsf(fwRandSym()) * 0.0140f;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = fwRandSym() * 0.00003f;
+            p->ay = -0.00022f;
+            life  = 0.58f + fwRand() * 0.22f;   // Balanced life
+            decay = 0.030f + fwRand() * 0.018f; // Moderate decay
+            sz    = 0.004f + fwRand() * 0.005f;
+            {
+                float t = speed / 0.019f;
+                p->r = (unsigned char)(r2 + (r - r2) * t);
+                p->g = (unsigned char)(g2 + (g - g2) * t);
+                p->b = (unsigned char)(b2 + (b - b2) * t);
+            }
+            p->trailR = (unsigned char)(r * 0.5f);
+            p->trailG = (unsigned char)(g * 0.3f);
+            p->trailB = (unsigned char)(b * 0.4f);
+            isSpark = (fwRand() < 0.18f);
+            break;
+
+        default:
+            angle = fwRand() * 2.0f * PI;
+            speed = 0.008f;
+            p->vx = cosf(angle) * speed / asp;
+            p->vy = sinf(angle) * speed;
+            p->ax = 0.0f; p->ay = -0.0003f;
+            life = 0.55f; decay = 0.035f; sz = 0.004f;
+            p->r=r; p->g=g; p->b=b;
+            p->trailR=r; p->trailG=g; p->trailB=b;
+            break;
+        }
+
+        p->x     = cx + fwRandSym() * 0.004f;
+        p->y     = cy + fwRandSym() * 0.004f;
+        p->life  = life;
+        p->decay = decay;
+        p->size  = sz;
+        p->isTrail = false;
+        p->isSpark  = isSpark;
+        p->active   = true;
+    }
+
+    // Bright white central flash particles (30 tight sparks)
+    for (int i = 0; i < 30; i++) {
+        FWParticle *p = fwAllocParticle();
+        float a = fwRand() * 2.0f * PI;
+        float s = 0.0020f + fwRand() * 0.0050f;
+        p->x = cx; p->y = cy;
+        p->vx = cosf(a) * s / asp;
+        p->vy = sinf(a) * s;
+        p->ax = 0.0f; p->ay = -0.00015f;
+        p->life = 0.35f; p->decay = 0.045f;  // Balanced life
+        p->size = 0.003f + fwRand() * 0.004f;
+        p->r=255; p->g=255; p->b=255;
+        p->trailR=255; p->trailG=255; p->trailB=200;
+        p->isTrail = false; p->isSpark = false;
+        p->active = true;
+        p->strobePhase = 0;
+    }
+}
+
+// Launch a rocket from a given site
+static void fwLaunchRocket(int siteIdx)
+{
+    // Find free rocket slot
+    FWRocket *rk = nullptr;
+    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        if (!fwRockets[i].active) { rk = &fwRockets[i]; break; }
+    }
+    if (!rk) return;
+
+    const FWLaunchSite &site = FW_SITES[siteIdx % FW_SITE_COUNT];
+
+    rk->x = site.x + fwRandSym() * 0.04f;
+    rk->y = site.y;
+    // Target: burst somewhere in the upper sky
+    rk->tx = rk->x + fwRandSym() * 0.25f;
+    rk->ty = 0.55f + fwRand() * 0.38f;
+
+    // Calculate velocity to reach target
+    float dy = rk->ty - rk->y;
+    float dx = rk->tx - rk->x;
+    float travelTicks = 28.0f + fwRand() * 18.0f;  // ticks to reach burst
+    rk->vx = dx / travelTicks;
+    rk->vy = dy / travelTicks;
+
+    rk->life = 1.0f;
+    rk->hasBurst = false;
+    rk->active = true;
+    rk->siteIdx = siteIdx;
+    rk->trailTimer = 0.0f;
+
+    // Type
+    FWRocketType t;
+    if (site.preferType >= 0 && fwRand() > 0.30f)
+        t = (FWRocketType)site.preferType;
+    else
+        t = (FWRocketType)((int)(fwRand() * FW_TYPE_COUNT));
+    rk->type = t;
+
+    fwPickColour(t, rk->r, rk->g, rk->b, rk->r2, rk->g2, rk->b2);
+}
+
+// Play sound for fireworks
+static void fwPlaySound()
+{
+    // First, try to play a system beep as test (this ALWAYS works)
+    // Comment this out after you confirm sound works
+    //Beep(1000, 200);
+
+    // Method 1: Try MCI with full path detection
+    char fullPath[MAX_PATH];
+    GetCurrentDirectory(MAX_PATH, fullPath);
+    strcat(fullPath, "\\fireWorkSoundV3.wav");
+
+    // Close any previous sound
+    mciSendString("close fwsnd", NULL, 0, NULL);
+
+    // Try to open with full path
+    char openCmd[256];
+    sprintf(openCmd, "open \"%s\" type waveaudio alias fwsnd", fullPath);
+
+    if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
+        // Successfully opened, now play it
+        mciSendString("play fwsnd", NULL, 0, NULL);
+        return;
+    }
+
+    // Method 2: Try relative path
+    sprintf(openCmd, "open \"fireWorkSoundV3.wav\" type waveaudio alias fwsnd");
+    if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
+        mciSendString("play fwsnd", NULL, 0, NULL);
+        return;
+    }
+
+    // Method 3: Try using PlaySound API (simpler)
+    if (PlaySound("fireWorkSoundV3.wav", NULL, SND_FILENAME | SND_ASYNC)) {
+        return;
+    }
+
+    // Method 4: Try Windows default sounds as fallback
+    PlaySound("C:\\Windows\\Media\\tada.wav", NULL, SND_FILENAME | SND_ASYNC);
+}
+
+static void fwStopSound()
+{
+    mciSendString("stop fwsnd", NULL, 0, NULL);
+    mciSendString("close fwsnd", NULL, 0, NULL);
+    PlaySound(NULL, NULL, 0); // Stop PlaySound if using that
+}
+
+// Initialize fireworks system
+static void initFireworks()
+{
+    for (int i = 0; i < FW_MAX_ROCKETS;   i++) fwRockets[i].active   = false;
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) fwParticles[i].active = false;
+    fwActive      = false;
+    fwTimer       = 0.0f;
+    fwLaunchTimer = 0.0f;
+    fwLaunchIdx   = 0;
+    fwFlashAlpha  = 0.0f;
+}
+// Force cleanup ALL fireworks particles and rockets
+static void fwForceCleanup()
+{
+    // Clear all particles
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        fwParticles[i].active = false;
+        fwParticles[i].life = 0.0f;
+    }
+
+    // Clear all rockets
+    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        fwRockets[i].active = false;
+        fwRockets[i].hasBurst = false;
+    }
+
+    // Reset flash
+    fwFlashAlpha = 0.0f;
+
+    // Reset any lingering state
+    fwActive = false;
+    fwTimer = 0.0f;
+    fwLaunchTimer = 0.0f;
+    fwLaunchIdx = 0;
+}
+
+// Update fireworks - call every tick
+static void updateFireworks(float dt)
+{
+    if (!fwActive) return;
+
+    fwTimer += dt;
+
+    // Wave schedule (seconds after 'f' press → sites to launch):
+    static const float FW_WAVE_TIMES[] = {
+        0.00f, 0.08f, 0.18f, 0.30f, 0.42f,  // rapid opening salvo
+        0.55f, 0.65f, 0.75f,                 // mid burst
+        0.88f, 0.95f, 1.05f,                 // climax
+        1.20f, 1.45f, 1.70f,                 // finale dying sparkle
+        2.00f, 2.30f, 2.60f,                 // EXTRA: more fireworks
+        3.00f                                // EXTRA: final burst
+    };
+    static const int FW_WAVE_SITES[] = {
+        2, 0, 3, 6, 1,
+        4, 7, 5,
+        8, 1, 0,
+        9, 10, 3,
+        2, 5, 8,      // EXTRA launches
+        1              // EXTRA launch
+    };
+    static int fwWaveDone[14] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    static bool fwWaveReset = false;
+
+    // Reset when newly activated
+    if (fwTimer < dt * 2.0f) {
+        for (int i = 0; i < 14; i++) fwWaveDone[i] = 0;
+        fwWaveReset = true;
+    }
+
+    for (int w = 0; w < 14; w++) {
+        if (!fwWaveDone[w] && fwTimer >= FW_WAVE_TIMES[w]) {
+            int siteIdx = FW_WAVE_SITES[w] % FW_SITE_COUNT;
+            fwLaunchRocket(siteIdx);
+            // Launch a second rocket from a nearby random site for density
+            if (fwRand() > 0.40f)
+                fwLaunchRocket((siteIdx + 2 + (int)(fwRand()*3)) % FW_SITE_COUNT);
+            fwWaveDone[w] = 1;
+        }
+    }
+
+    // Stop fireworks after sound duration + a little tail
+    // Stop fireworks after sound duration + a little tail
+    if (fwTimer > FW_SOUND_DURATION + 1.5f) {
+        // FORCE CLEANUP ALL PARTICLES AND ROCKETS
+        for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+            fwParticles[i].active = false;
+            fwParticles[i].life = 0.0f;
+        }
+        for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+            fwRockets[i].active = false;
+            fwRockets[i].hasBurst = false;
+        }
+
+        fwActive = false;
+        fwTimer  = 0.0f;
+        fwFlashAlpha = 0.0f;
+
+        for (int w = 0; w < 14; w++) fwWaveDone[w] = 0;
+    }
+
+    float asp = 1400.0f / 800.0f;
+
+    // Update rockets
+    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        FWRocket &rk = fwRockets[i];
+        if (!rk.active) continue;
+
+        // Spawn trail smoke/sparks
+        rk.trailTimer += dt;
+        if (rk.trailTimer > 0.020f) {
+            rk.trailTimer = 0.0f;
+            // Bright spark trail
+            FWParticle *tp = fwAllocParticle();
+            tp->x = rk.x + fwRandSym() * 0.003f;
+            tp->y = rk.y - 0.004f;
+            tp->vx = fwRandSym() * 0.0015f;
+            tp->vy = -0.003f - fwRand() * 0.003f;
+            tp->ax = 0.0f; tp->ay = 0.00005f;
+            tp->life = 0.35f;      // Balanced life for trails
+            tp->decay = 0.045f;    // Normal decay
+            tp->size = 0.003f + fwRand() * 0.003f;
+            tp->r = rk.r; tp->g = rk.g; tp->b = rk.b;
+            tp->isTrail = true; tp->isSpark = false;
+            tp->active = true; tp->strobePhase = 0;
+            // Smoke puff
+            fwSpawnTrailPuff(rk.x, rk.y, 120, 115, 110);
+        }
+
+        // Move rocket
+        rk.x += rk.vx;
+        rk.y += rk.vy;
+
+        // Check if reached burst point
+        float dy = rk.ty - rk.y;
+        float dx = rk.tx - rk.x;
+        float distSq = dx*dx + dy*dy;
+
+        // Also check if it overshot (dot product sign flip)
+        bool reached = (distSq < 0.0010f) ||
+                       ((rk.vx * dx + rk.vy * dy) < 0.0f);
+
+        if (reached && !rk.hasBurst) {
+            rk.hasBurst = true;
+            rk.active   = false;
+            fwBurst(rk.x, rk.y, rk.type,
+                    rk.r, rk.g, rk.b,
+                    rk.r2, rk.g2, rk.b2);
+        }
+
+        // Safety deactivate if rocket goes off screen
+        if (rk.y > 1.05f || rk.x < -1.2f || rk.x > 1.2f) {
+            rk.active = false;
+            if (!rk.hasBurst) {
+                rk.hasBurst = true;
+                fwBurst(rk.x, fminf(rk.y, 0.98f),
+                        rk.type,
+                        rk.r, rk.g, rk.b,
+                        rk.r2, rk.g2, rk.b2);
+            }
+        }
+    }
+
+    // Update particles
+    // Update particles
+    static int strobeCounter = 0;
+    strobeCounter++;
+
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        FWParticle &p = fwParticles[i];
+        if (!p.active) continue;
+
+        // Physics
+        p.vx += p.ax;
+        p.vy += p.ay;
+        p.x  += p.vx;
+        p.y  += p.vy;
+        p.life -= p.decay;
+
+        // Aggressive cleanup - remove particles with low life
+        if (p.life <= 0.12f) {
+            p.active = false;
+            continue;
+        }
+
+        // Extra cleanup for trail particles (they have different alpha behavior)
+        if (p.isTrail && p.life <= 0.10f) {
+            p.active = false;
+            continue;
+        }
+
+        // Secondary sparkle spawning
+        if (p.isSpark && p.life < 0.35f && p.life > 0.30f) {
+            p.isSpark = false;
+            for (int s = 0; s < 5; s++) {
+                FWParticle *sp = fwAllocParticle();
+                sp->x = p.x; sp->y = p.y;
+                sp->vx = fwRandSym() * 0.003f;
+                sp->vy = fwRandSym() * 0.003f;
+                sp->ax = 0.0f; sp->ay = -0.00015f;
+                sp->life = 0.18f; sp->decay = 0.055f;  // Fast decay
+                sp->size = 0.0018f + fwRand() * 0.002f;
+                sp->r = 255; sp->g = 230; sp->b = 100;
+                sp->isTrail = false; sp->isSpark = false;
+                sp->active = true; sp->strobePhase = 0;
+            }
+        }
+    }
+    // Stop fireworks after sound duration + a little tail
+    if (fwTimer > FW_SOUND_DURATION + 1.5f) {
+        fwForceCleanup();  // ← Add this line
+        // Remove the individual cleanup lines below
+    }
+
+}
+// Draw fireworks screen flash
+static void drawFWFlash() {
+    if (fwFlashAlpha < 0.01f) return;
+    glColor4f(1.0f, 1.0f, 1.0f, fwFlashAlpha * 0.18f);
+    glBegin(GL_QUADS);
+    glVertex2f(-1.0f, -1.0f);
+    glVertex2f( 1.0f, -1.0f);
+    glVertex2f( 1.0f,  1.0f);
+    glVertex2f(-1.0f,  1.0f);
+    glEnd();
+    fwFlashAlpha *= 0.75f;  // decay
+    if (fwFlashAlpha < 0.01f) fwFlashAlpha = 0.0f;
+}
+
+// Draw fireworks
+static void drawFireworks()
+{
+    // Always draw remaining particles even when !fwActive
+    bool anyAlive = false;
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        if (fwParticles[i].active) { anyAlive = true; break; }
+    }
+    bool anyRocket = false;
+    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        if (fwRockets[i].active) { anyRocket = true; break; }
+    }
+    if (!fwActive && !anyAlive && !anyRocket) return;
+
+    float asp = 1400.0f / 800.0f;
+    static int strobeCounter = 0;
+    strobeCounter++;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Draw particles
+    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        FWParticle &p = fwParticles[i];
+        if (!p.active) continue;
+
+        float lifeN = fmaxf(0.0f, p.life);   // 0..1 normalised
+
+        if (p.isTrail) {
+            // Smoke/trail puff — grey, large, very transparent
+            unsigned char a = (unsigned char)(lifeN * lifeN * 80.0f);
+            if (a < 3) continue;
+            glColor4ub(p.r, p.g, p.b, a);
+            glBegin(GL_TRIANGLE_FAN);
+            glVertex2f(p.x, p.y);
+            int segs = 8;
+            for (int s = 0; s <= segs; s++) {
+                float ang = s * 2.0f * PI / segs;
+                glVertex2f(p.x + cosf(ang) * p.size,
+                           p.y + sinf(ang) * p.size * 0.6f);
+            }
+            glEnd();
+            continue;
+        }
+
+        // Strobe — flicker effect
+        bool strobeOn = true;
+        if (p.strobePhase != 0) {
+            strobeOn = ((strobeCounter + p.strobePhase) % 4) < 2;
+        }
+        if (!strobeOn) continue;
+
+        // Alpha: bright for first 60% of life, then fades fast
+        float alphaN;
+        if (lifeN > 0.60f) alphaN = 1.0f;
+        else                alphaN = lifeN / 0.60f;
+        alphaN = alphaN * alphaN;  // quadratic fade
+
+        unsigned char a = (unsigned char)(alphaN * 245.0f);
+        if (a < 8) continue;  // Low threshold - particles fade out naturally
+
+        // Glow halo
+        {
+            unsigned char ga = (unsigned char)(alphaN * 55.0f);
+            glColor4ub(p.r, p.g, p.b, ga);
+            glBegin(GL_TRIANGLE_FAN);
+            glVertex2f(p.x, p.y);
+            float haloSz = p.size * 5.0f;
+            for (int s = 0; s <= 10; s++) {
+                float ang = s * 2.0f * PI / 10.0f;
+                glColor4ub(p.r, p.g, p.b, 0);
+                glVertex2f(p.x + cosf(ang) * haloSz / asp,
+                           p.y + sinf(ang) * haloSz);
+            }
+            glEnd();
+        }
+
+        // Core bright dot
+        glColor4ub(p.r, p.g, p.b, a);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(p.x, p.y);
+        for (int s = 0; s <= 10; s++) {
+            float ang = s * 2.0f * PI / 10.0f;
+            unsigned char cr = (unsigned char)(fminf(255.0f, p.r * 1.3f));
+            unsigned char cg = (unsigned char)(fminf(255.0f, p.g * 1.3f));
+            unsigned char cb = (unsigned char)(fminf(255.0f, p.b * 1.3f));
+            glColor4ub(cr, cg, cb, (unsigned char)(a * 0.5f));
+            glVertex2f(p.x + cosf(ang) * p.size / asp,
+                       p.y + sinf(ang) * p.size);
+        }
+        glEnd();
+
+        // Short velocity trail
+        {
+            float trailLen = 2.8f;
+            float tx = p.x - p.vx * trailLen;
+            float ty = p.y - p.vy * trailLen;
+            unsigned char ta = (unsigned char)(alphaN * 160.0f);
+            glColor4ub(p.trailR, p.trailG, p.trailB, ta);
+            glLineWidth(1.2f);
+            glBegin(GL_LINES);
+            glVertex2f(p.x, p.y);
+            glColor4ub(p.trailR, p.trailG, p.trailB, 0);
+            glVertex2f(tx, ty);
+            glEnd();
+        }
+    }
+
+    // Draw rockets (ascending phase)
+    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        FWRocket &rk = fwRockets[i];
+        if (!rk.active) continue;
+
+        // Rocket body — bright dot
+        glColor4ub(rk.r, rk.g, rk.b, 240);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2f(rk.x, rk.y);
+        float rSz = 0.006f;
+        for (int s = 0; s <= 12; s++) {
+            float ang = s * 2.0f * PI / 12.0f;
+            glColor4ub(255, 255, 220, 80);
+            glVertex2f(rk.x + cosf(ang) * rSz / asp,
+                       rk.y + sinf(ang) * rSz);
+        }
+        glEnd();
+
+        // Rocket glow
+        glBegin(GL_TRIANGLE_FAN);
+        glColor4ub(rk.r, rk.g, rk.b, 70);
+        glVertex2f(rk.x, rk.y);
+        float gSz = 0.020f;
+        for (int s = 0; s <= 12; s++) {
+            float ang = s * 2.0f * PI / 12.0f;
+            glColor4ub(rk.r, rk.g, rk.b, 0);
+            glVertex2f(rk.x + cosf(ang) * gSz / asp,
+                       rk.y + sinf(ang) * gSz);
+        }
+        glEnd();
+    }
+
+    glLineWidth(1.0f);
+}
 
 // ── Additional helpers for smooth day/night transition ──
 static float smoothStep(float t) //[Prottoy]
@@ -5604,6 +6466,21 @@ void keyboard(unsigned char key, int x, int y)
         if (cloudSpeedMult > 5.0f) cloudSpeedMult = 5.0f;  // cap at 5x
         break;
 
+    // ── FIREWORKS KEY ────────────────────────────────────────────
+    case 'f':   // start fireworks show
+        if (!fwActive) {
+            fwActive    = true;
+            fwTimer     = 0.0f;
+            fwLaunchIdx = 0;
+            // Kill any leftover particles from last show
+            for (int i = 0; i < FW_MAX_PARTICLES; i++)
+                fwParticles[i].active = false;
+            for (int i = 0; i < FW_MAX_ROCKETS; i++)
+                fwRockets[i].active = false;
+            fwPlaySound();
+        }
+        break;
+
     default:
         return; // ignore other keys
     }
@@ -6084,7 +6961,6 @@ static void drawAnnex9Lights()
 
     glPopMatrix();
 }
-
 // ================================================================
 //  SUMMER SEASON EXTRA DECORATIONS (Stall, kids, birds, dry patches, extra heat haze)
 // ================================================================
@@ -6647,6 +7523,10 @@ void display()
         drawWinter();
     }
 
+    // ── FIREWORKS (drawn last, on top of everything) ──
+    drawFWFlash();
+    drawFireworks();
+
     glFlush();
 }
 // ================================================================
@@ -6678,6 +7558,7 @@ void init()
     initAutumn();  // [Emad]
     initWinter();  // [Shajmin]
     initPlayers(); // [Shajmin]
+    initFireworks(); // Initialize fireworks system
 }
 void update(int value)
 {
@@ -6731,6 +7612,9 @@ void update(int value)
     // Move the bouncing players (Shajmin)
     updatePlayers();
 
+    // ── Update fireworks (55ms per tick) ──
+    updateFireworks(0.055f);
+
     glutPostRedisplay();
     glutTimerFunc(55, update, 0);
 }
@@ -6739,7 +7623,7 @@ int main(int argc, char **argv)
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB);
     glutInitWindowSize(1400, 800);
-    glutCreateWindow("AIUB Campus – Complete Scene (All Seasons)");
+    glutCreateWindow("AIUB Campus – Complete Scene (All Seasons + Fireworks)");
     glutKeyboardFunc(keyboard);
     init();
     glutDisplayFunc(display);
