@@ -111,6 +111,7 @@ static float nightAngle = 0.0f; // 0 → PI : moon arc
 static int isDay = 1;           // 1 = day, 0 = night
 static float breezeSpeed = 0.016f;
 static float cloudScale = 1.0f;   // 1.0 = default size, +/- keys adjust this
+static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
 
 // ── Additional helpers for smooth day/night transition ──
 static float smoothStep(float t) //[Prottoy]
@@ -5593,6 +5594,15 @@ void keyboard(unsigned char key, int x, int y)
         cloudScale -= 0.1f;
         if (cloudScale < 0.2f) cloudScale = 0.2f;  // floor at 0.2x default
         break;
+    case '[':   // decrease cloud speed
+        cloudSpeedMult -= 0.2f;
+        if (cloudSpeedMult < 0.0f) cloudSpeedMult = 0.0f;  // can fully stop
+        break;
+
+    case ']':   // increase cloud speed
+        cloudSpeedMult += 0.2f;
+        if (cloudSpeedMult > 5.0f) cloudSpeedMult = 5.0f;  // cap at 5x
+        break;
 
     default:
         return; // ignore other keys
@@ -6356,7 +6366,7 @@ static void updateSpringClouds()
         if (cloudActive[i])
         {
             // Move clouds slowly to the right
-            cloudX[i] += cloudSpeed[i];
+            cloudX[i] += cloudSpeed[i] * cloudSpeedMult;
 
             // Reset cloud when it goes off-screen
             if (cloudX[i] > 1.5f)

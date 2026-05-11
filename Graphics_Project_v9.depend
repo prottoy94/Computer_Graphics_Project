@@ -1,5 +1,5 @@
 # depslib dependency file v1.0
-1778488497 source:d:\study notes (8th semester)\computer graphics\computer grpahics lab\graphics_project_v9\main.cpp
+1778503162 source:d:\study notes (8th semester)\computer graphics\computer grpahics lab\graphics_project_v9\main.cpp
 	<windows.h>
 	<GL/freeglut.h>
 	<math.h>
