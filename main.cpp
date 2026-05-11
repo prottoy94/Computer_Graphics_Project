@@ -109,6 +109,8 @@ static float windSwayMax = 8.0f; // max sway degrees
 static float dayAngle = 0.28f;  // 0 → PI : sun travels left → right
 static float nightAngle = 0.0f; // 0 → PI : moon arc
 static int isDay = 1;           // 1 = day, 0 = night
+static float breezeSpeed = 0.016f;
+static float cloudScale = 1.0f;   // 1.0 = default size, +/- keys adjust this
 
 // ── Additional helpers for smooth day/night transition ──
 static float smoothStep(float t) //[Prottoy]
@@ -3731,7 +3733,7 @@ static void drawRoadsideItems() //[Prottoy]
     float botKerbY = -0.990f;
 
     // Phase offset counter – increments for each tree to give unique sway
-    int phaseIdx = 0;
+    int phaseIdx = 1;
 
     // ----- TOP ROW -----
     struct
@@ -3755,7 +3757,7 @@ static void drawRoadsideItems() //[Prottoy]
     int nTop = sizeof(topItems) / sizeof(topItems[0]);
     for (int i = 0; i < nTop; i++)
     {
-        float phase = (float)(phaseIdx * 37.0f);
+        float phase = (float)(phaseIdx * 43.0f);
         if (topItems[i].type == 3)
             drawLampPost(topItems[i].x, topKerbY, topItems[i].side);
         else if (topItems[i].type == 0)
@@ -3798,7 +3800,7 @@ static void drawRoadsideItems() //[Prottoy]
     int nBot = sizeof(botItems) / sizeof(botItems[0]);
     for (int i = 0; i < nBot; i++)
     {
-        float phase = (float)(phaseIdx * 37.0f); // determining the movement o the tree.
+        float phase = (float)(phaseIdx * 43.0f); // determining the movement o the tree.
         if (botItems[i].type == 3)
             drawLampPost(botItems[i].x, botKerbY, botItems[i].side);
         else if (botItems[i].type == 0)
@@ -3977,16 +3979,6 @@ static void initPetals() // [Prottoy]
 static void updatePetals() // [Prottoy]
 {
     // Wind sway update — each call advances the oscillation
-    windAngle += 0.016f;                      // controls the speed of the paddles
-    windSway = windSwayMax * sinf(windAngle); // oscillates between -1 to +1 which shows the left right movements
-                                              // The value of the angle continue increase, so the paddles moves left and right
-    // Occasionally shift wind direction for variety
-    if (windAngle > PI * 2.0f)
-    {
-        windAngle = 0.0f;
-        windDir = (petalRand() > 0.5f) ? 1.0f : -1.0f; // updating wind speed // giving me a random value so it changing the direction occasionally at the midpoint of the transition
-        windSwayMax = 5.0f + petalRand() * 6.0f;       // 5–11 degree max sway
-    }
     for (int i = 0; i < MAX_FALLING; i++) // The actual implementation is done here.
     {
         if (!fallingPetals[i].active)
@@ -5581,6 +5573,26 @@ void keyboard(unsigned char key, int x, int y)
         autumnMode = false;
         winterMode = false;
         break;
+    case '+':   // increase breeze speed
+    case '=':   // same physical key without Shift
+        breezeSpeed += 0.004f;
+        if (breezeSpeed > 0.080f) breezeSpeed = 0.080f;  // cap at ~5× default
+        break;
+
+    case '-':   // decrease breeze speed
+    case '_':
+        breezeSpeed -= 0.004f;
+        if (breezeSpeed < 0.002f) breezeSpeed = 0.002f;  // floor — never fully stops
+        break;
+    case 'z':   // increase cloud size
+        cloudScale += 0.1f;
+        if (cloudScale > 3.0f) cloudScale = 3.0f;  // cap at 3x default
+        break;
+
+    case 'x':   // decrease cloud size
+        cloudScale -= 0.1f;
+        if (cloudScale < 0.2f) cloudScale = 0.2f;  // floor at 0.2x default
+        break;
 
     default:
         return; // ignore other keys
@@ -6268,21 +6280,21 @@ static void drawSummerHeatHaze()
 // ----------------------------------------------------------------
 static void drawSingleCloud(float cx, float cy, float size)
 {
-    glColor4ub(245, 248, 250, 220); // soft white with slight transparency
+    float s = size * cloudScale;   // apply global scale to this cloud's size
 
-    // Main cloud body made of overlapping circles
-    diskFan(cx, cy, size * 0.45f, size * 0.35f, 20, 245, 248, 250);
-    diskFan(cx - size * 0.35f, cy - size * 0.08f, size * 0.38f, size * 0.30f, 20, 248, 250, 252);
-    diskFan(cx + size * 0.35f, cy - size * 0.08f, size * 0.38f, size * 0.30f, 20, 248, 250, 252);
-    diskFan(cx - size * 0.18f, cy + size * 0.12f, size * 0.32f, size * 0.28f, 20, 250, 252, 255);
-    diskFan(cx + size * 0.18f, cy + size * 0.12f, size * 0.32f, size * 0.28f, 20, 250, 252, 255);
-    diskFan(cx, cy + size * 0.18f, size * 0.35f, size * 0.28f, 20, 252, 254, 255);
+    glColor4ub(245, 248, 250, 220);
 
-    // Slightly darker bottom for depth
+    diskFan(cx, cy, s * 0.45f, s * 0.35f, 20, 245, 248, 250);
+    diskFan(cx - s * 0.35f, cy - s * 0.08f, s * 0.38f, s * 0.30f, 20, 248, 250, 252);
+    diskFan(cx + s * 0.35f, cy - s * 0.08f, s * 0.38f, s * 0.30f, 20, 248, 250, 252);
+    diskFan(cx - s * 0.18f, cy + s * 0.12f, s * 0.32f, s * 0.28f, 20, 250, 252, 255);
+    diskFan(cx + s * 0.18f, cy + s * 0.12f, s * 0.32f, s * 0.28f, 20, 250, 252, 255);
+    diskFan(cx, cy + s * 0.18f, s * 0.35f, s * 0.28f, 20, 252, 254, 255);
+
     glColor4ub(220, 225, 230, 180);
-    diskFan(cx - size * 0.25f, cy - size * 0.12f, size * 0.30f, size * 0.22f, 16, 220, 225, 230);
-    diskFan(cx + size * 0.25f, cy - size * 0.12f, size * 0.30f, size * 0.22f, 16, 220, 225, 230);
-    diskFan(cx, cy - size * 0.15f, size * 0.32f, size * 0.24f, 16, 218, 223, 228);
+    diskFan(cx - s * 0.25f, cy - s * 0.12f, s * 0.30f, s * 0.22f, 16, 220, 225, 230);
+    diskFan(cx + s * 0.25f, cy - s * 0.12f, s * 0.30f, s * 0.22f, 16, 220, 225, 230);
+    diskFan(cx, cy - s * 0.15f, s * 0.32f, s * 0.24f, 16, 218, 223, 228);
 }
 
 // ----------------------------------------------------------------
@@ -6661,7 +6673,17 @@ void update(int value)
 {
     updateDayNight();
 
-    // Only update petals in spring mode
+    // Wind sway runs in ALL seasons — always update it
+    windAngle += breezeSpeed;
+    windSway = windSwayMax * sinf(windAngle);
+    if (windAngle > PI * 2.0f)
+    {
+        windAngle = 0.0f;
+        windDir = (petalRand() > 0.5f) ? 1.0f : -1.0f;
+        windSwayMax = 5.0f + petalRand() * 6.0f;
+    }
+
+    // Petals only update in spring mode
     if (springMode && !rainMode)
     {
         updatePetals();
