@@ -55,6 +55,7 @@
 #define MAX_RESTING 55
 #define MAX_RAIN 200
 
+
 // ── Cloud system for spring season ─────────────────────────────────
 #define MAX_CLOUDS 8
 static float cloudX[MAX_CLOUDS];
@@ -102,11 +103,12 @@ static float soccerVY[SOCCER_COUNT]; // football player Y velocity
 
 static bool springMode = true; // true = spring (petals), false = normal
 static bool rainMode = false;  // true = rainy season, false = dry
-
+static int rainSoundPlaying = 0;
 // ── Rain particles (Sadia) ────────────────────────────────────────
 static float rainX[MAX_RAIN];
 static float rainY[MAX_RAIN];
 static float rainSpeed[MAX_RAIN];
+static float rainSpeedMult = 1.0f;
 
 // ── Wind animation state (used only by tree sway / petal physics) ──
 static float windAngle = 0.0f;   // current sway angle (degrees)
@@ -127,6 +129,25 @@ static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
 #define FW_MAX_PARTICLES  4200    // total particle pool (all bursts combined)
 #define FW_SOUND_DURATION 5.0f   // seconds — matches fireWorkSoundV3.m4a length
 
+
+//Thunderstrom sadia
+static bool  thunderMode      = false;
+static int   thunderIntensity = 1;       // 1, 2, 3 — bolt scale level
+static float thunderTimer     = 0.0f;
+static float thunderFlashAlpha= 0.0f;
+static bool  lightningVisible = false;
+static float lightningTimer   = 0.0f;
+
+#define MAX_LIGHTNING_SEGS 16
+static float lgSegX[MAX_LIGHTNING_SEGS + 1];
+static float lgSegY[MAX_LIGHTNING_SEGS + 1];
+static int   lgSegCount = 0;
+
+// Branch bolts (only at intensity 2 and 3)
+#define MAX_BRANCHES 3
+static float branchX[MAX_BRANCHES][9];
+static float branchY[MAX_BRANCHES][9];
+static int   branchCount = 0;
 // Rocket types
 enum FWRocketType {
     FW_CHRYSANTHEMUM = 0,  // dense full sphere — classic gold
@@ -554,6 +575,38 @@ static void fwLaunchRocket(int siteIdx)
     rk->type = t;
 
     fwPickColour(t, rk->r, rk->g, rk->b, rk->r2, rk->g2, rk->b2);
+}
+//sound of rain
+
+static void playRainSound()
+{
+    mciSendString("close rainsnd", NULL, 0, NULL);
+
+    char fullPath[MAX_PATH];
+    GetCurrentDirectory(MAX_PATH, fullPath);
+    strcat(fullPath, "\\rain.wav");
+
+    char openCmd[256];
+    sprintf(openCmd, "open \"%s\" type waveaudio alias rainsnd", fullPath);
+
+    if (mciSendString(openCmd, NULL, 0, NULL) == 0)
+    {
+        mciSendString("play rainsnd repeat", NULL, 0, NULL);  // repeat = loops forever
+        rainSoundPlaying = 1;
+        return;
+    }
+
+    // Fallback
+    PlaySound("rain.wav", NULL, SND_FILENAME | SND_ASYNC | SND_LOOP);
+    rainSoundPlaying = 1;
+}
+
+static void stopRainSound()
+{
+    mciSendString("stop rainsnd", NULL, 0, NULL);
+    mciSendString("close rainsnd", NULL, 0, NULL);
+    PlaySound(NULL, NULL, 0);
+    rainSoundPlaying = 0;
 }
 
 // Play sound for fireworks
@@ -4917,45 +4970,34 @@ static void updatePetals() // [Prottoy]
 // ================================================================
 static void updateTraffic()
 {
-    // ---- Move every car ----
     for (int i = 0; i < 8; i++)
     {
-        if (carLane[i] == 0) // top lane = going RIGHT
+        if (carLane[i] == 0)
         {
-            carX[i] += 0.0030f;
-            if (carX[i] > 1.10f) // gone off the right edge?
-            {
-                carX[i] = -1.10f; // wrap back to the left edge
-            }
+             carX[i] += 0.0030f;
+            if (carX[i] > 1.10f)
+                carX[i] = -1.10f;
         }
-        else // bottom lane = going LEFT
+        else
         {
             carX[i] -= 0.0028f;
-            if (carX[i] < -1.10f) // gone off the left edge?
-            {
-                carX[i] = 1.10f; // wrap back to the right edge
-            }
+            if (carX[i] < -1.10f)
+                carX[i] = 1.10f;
         }
     }
 
-    // ---- Move every pedestrian ----
+    // pedestrians unchanged — no multiplier applied here
     for (int i = 0; i < 6; i++)
     {
-        if (pedRow[i] == 0) // top kerb = going RIGHT
+        if (pedRow[i] == 0)
         {
             pedX[i] += 0.0017f;
-            if (pedX[i] > 1.10f)
-            {
-                pedX[i] = -1.10f;
-            }
+            if (pedX[i] > 1.10f) pedX[i] = -1.10f;
         }
-        else // bottom kerb = going LEFT
+        else
         {
             pedX[i] -= 0.0015f;
-            if (pedX[i] < -1.10f)
-            {
-                pedX[i] = 1.10f;
-            }
+            if (pedX[i] < -1.10f) pedX[i] = 1.10f;
         }
     }
 }
@@ -6403,15 +6445,27 @@ void keyboard(unsigned char key, int x, int y)
         autumnMode = false;
         winterMode = false;
         summerMode = false;
+        stopRainSound();
         break;
 
-    case 'r': // Rainy season mode (rain drops, umbrellas)
-        rainMode   = true;
-        springMode = false;
-        autumnMode = false;
-        winterMode = false;
-        summerMode = false;
-        break;
+    case 'r':
+    rainMode   = true;
+    springMode = false;
+    autumnMode = false;
+    winterMode = false;
+    summerMode = false;
+    if (!rainSoundPlaying)
+        playRainSound();   // ← start rain sound
+    break;
+    case 'p':   // speed up rain
+    rainSpeedMult += 0.5f;
+    if (rainSpeedMult > 5.0f) rainSpeedMult = 5.0f;
+    break;
+
+case 'o':   // slow down rain
+    rainSpeedMult -= 0.5f;
+    if (rainSpeedMult < 0.0f) rainSpeedMult = 0.0f;
+    break;
 
     case 'a': // Autumn mode — falling leaves (Emad)
         autumnMode = true;
@@ -6419,6 +6473,7 @@ void keyboard(unsigned char key, int x, int y)
         rainMode   = false;
         winterMode = false;
         summerMode = false;
+        stopRainSound();
         break;
 
     case 'w': // Winter mode — falling snow (Shajmin)
@@ -6427,6 +6482,7 @@ void keyboard(unsigned char key, int x, int y)
         rainMode   = false;
         autumnMode = false;
         summerMode = false;
+        stopRainSound();
         break;
 
     case 'g': // Summer mode — mangoes, jackfruits, heat haze, stall, birds
@@ -6435,6 +6491,7 @@ void keyboard(unsigned char key, int x, int y)
         rainMode   = false;
         autumnMode = false;
         winterMode = false;
+        stopRainSound();
         break;
     case '+':   // increase breeze speed
     case '=':   // same physical key without Shift
@@ -6465,6 +6522,39 @@ void keyboard(unsigned char key, int x, int y)
         cloudSpeedMult += 0.2f;
         if (cloudSpeedMult > 5.0f) cloudSpeedMult = 5.0f;  // cap at 5x
         break;
+
+        case 't':
+    if (!thunderMode)
+    {
+        // First press — turn on at level 1
+        thunderMode       = true;
+        rainMode          = true;
+        springMode        = false;
+        autumnMode        = false;
+        winterMode        = false;
+        summerMode        = false;
+        thunderIntensity  = 1;
+        thunderTimer      = 0.4f;   // first bolt comes quickly
+        lightningVisible  = false;
+        thunderFlashAlpha = 0.0f;
+    }
+    else
+    {
+        thunderIntensity++;
+        if (thunderIntensity > 3)
+        {
+            // Fourth press — turn off
+            thunderMode      = false;
+            thunderIntensity = 1;
+            lightningVisible = false;
+            thunderFlashAlpha= 0.0f;
+        }
+        else
+        {
+            thunderTimer = 0.3f;  // show new size quickly
+        }
+    }
+    break;
 
     // ── FIREWORKS KEY ────────────────────────────────────────────
     case 'f':   // start fireworks show
@@ -7255,6 +7345,192 @@ static void updateSpringClouds()
         }
     }
 }
+//thunderstrom
+static void generateLightningBolt(float startX, float startY,
+                                   float endX,   float endY,
+                                   int intensity)
+{
+    // More segments = more jagged at higher intensity
+    lgSegCount = 4 + intensity * 3;  // lvl1=7, lvl2=10, lvl3=13
+    if (lgSegCount > MAX_LIGHTNING_SEGS) lgSegCount = MAX_LIGHTNING_SEGS;
+
+    lgSegX[0] = startX;
+    lgSegY[0] = startY;
+
+    float dx = (endX - startX) / lgSegCount;
+    float dy = (endY - startY) / lgSegCount;
+
+    // Jag amount grows with intensity
+    float jagAmt = 0.04f + intensity * 0.055f;  // lvl1=0.095, lvl2=0.15, lvl3=0.205
+
+    for (int i = 1; i < lgSegCount; i++)
+    {
+        lgSegX[i] = startX + dx * i + fwRandSym() * jagAmt;
+        lgSegY[i] = startY + dy * i + fwRandSym() * jagAmt * 0.4f;
+    }
+    lgSegX[lgSegCount] = endX;
+    lgSegY[lgSegCount] = endY;
+
+    // Generate branches at intensity 2+
+    branchCount = 0;
+    if (intensity >= 2)
+    {
+        int numBranches = (intensity == 2) ? 1 : MAX_BRANCHES;
+        for (int b = 0; b < numBranches && b < MAX_BRANCHES; b++)
+        {
+            // Branch splits off from a random mid-segment
+            int splitSeg = 2 + (int)(fwRand() * (lgSegCount - 3));
+            float bStartX = lgSegX[splitSeg];
+            float bStartY = lgSegY[splitSeg];
+
+            // Branch goes off at an angle
+            float bLen    = 0.15f + intensity * 0.08f;
+            float bAngle  = fwRandSym() * 0.9f;
+            float bEndX   = bStartX + cosf(bAngle) * bLen;
+            float bEndY   = bStartY - sinf(fabsf(bAngle)) * bLen * 0.6f;
+
+            int bSegs = 3 + intensity;
+            branchX[b][0] = bStartX;
+            branchY[b][0] = bStartY;
+
+            float bdx = (bEndX - bStartX) / bSegs;
+            float bdy = (bEndY - bStartY) / bSegs;
+            float bJag = jagAmt * 0.55f;
+
+            for (int i = 1; i < bSegs; i++)
+            {
+                branchX[b][i] = bStartX + bdx * i + fwRandSym() * bJag;
+                branchY[b][i] = bStartY + bdy * i + fwRandSym() * bJag * 0.4f;
+            }
+            branchX[b][bSegs] = bEndX;
+            branchY[b][bSegs] = bEndY;
+            branchCount++;
+        }
+    }
+}
+static void drawThunderstorm()
+{
+    if (!thunderMode) return;
+
+    // Sky flash
+    if (thunderFlashAlpha > 0.01f)
+    {
+        glColor4f(0.88f, 0.93f, 1.0f, thunderFlashAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(-1.0f, -1.0f); glVertex2f( 1.0f, -1.0f);
+        glVertex2f( 1.0f,  1.0f); glVertex2f(-1.0f,  1.0f);
+        glEnd();
+        thunderFlashAlpha *= 0.76f;
+        if (thunderFlashAlpha < 0.01f) thunderFlashAlpha = 0.0f;
+    }
+
+    if (!lightningVisible || lgSegCount == 0) return;
+
+    float alpha = lightningTimer;  // fades 1→0
+
+    // Line thickness scales with intensity
+    float outerW = 4.0f + thunderIntensity * 4.0f;  // lvl1=8, lvl2=12, lvl3=16
+    float midW   = 2.0f + thunderIntensity * 2.0f;  // lvl1=4,  lvl2=6,  lvl3=8
+    float coreW  = 0.8f + thunderIntensity * 0.7f;  // lvl1=1.5, lvl2=2.2, lvl3=2.9
+
+    // ── MAIN BOLT ──
+    // Outer glow
+    glColor4f(0.5f, 0.65f, 1.0f, alpha * 0.35f);
+    glLineWidth(outerW);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= lgSegCount; i++)
+        glVertex2f(lgSegX[i], lgSegY[i]);
+    glEnd();
+
+    // Mid glow
+    glColor4f(0.78f, 0.88f, 1.0f, alpha * 0.65f);
+    glLineWidth(midW);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= lgSegCount; i++)
+        glVertex2f(lgSegX[i], lgSegY[i]);
+    glEnd();
+
+    // White core
+    glColor4f(1.0f, 1.0f, 1.0f, alpha);
+    glLineWidth(coreW);
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= lgSegCount; i++)
+        glVertex2f(lgSegX[i], lgSegY[i]);
+    glEnd();
+
+    // ── BRANCHES (intensity 2 and 3) ──
+    for (int b = 0; b < branchCount; b++)
+    {
+        int bSegs = 3 + thunderIntensity;
+
+        glColor4f(0.6f, 0.75f, 1.0f, alpha * 0.30f);
+        glLineWidth(midW * 0.55f);
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i <= bSegs; i++)
+            glVertex2f(branchX[b][i], branchY[b][i]);
+        glEnd();
+
+        glColor4f(1.0f, 1.0f, 1.0f, alpha * 0.75f);
+        glLineWidth(coreW * 0.55f);
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i <= bSegs; i++)
+            glVertex2f(branchX[b][i], branchY[b][i]);
+        glEnd();
+    }
+
+    // ── GROUND IMPACT GLOW — scales with intensity ──
+    float gx  = lgSegX[lgSegCount];
+    float gy  = lgSegY[lgSegCount];
+    float gRx = 0.06f + thunderIntensity * 0.055f;  // lvl1=0.115, lvl2=0.17, lvl3=0.225
+    float gRy = gRx * 0.40f;
+
+    glBegin(GL_TRIANGLE_FAN);
+    glColor4f(0.85f, 0.92f, 1.0f, alpha * 0.70f);
+    glVertex2f(gx, gy);
+    for (int k = 0; k <= 24; k++)
+    {
+        float a = k * 2.f * PI / 24.f;
+        glColor4f(0.55f, 0.70f, 1.0f, 0.0f);
+        glVertex2f(gx + cosf(a) * gRx, gy + sinf(a) * gRy);
+    }
+    glEnd();
+
+    glLineWidth(1.0f);
+}
+static void updateThunderstorm(float dt)
+{
+    if (!thunderMode) return;
+
+    thunderTimer -= dt;
+    if (thunderTimer <= 0.0f)
+    {
+        // Strike from random sky position
+        float sx = fwRandSym() * 0.85f;
+        float sy = 0.60f + fwRand() * 0.35f;
+        float ex = sx + fwRandSym() * 0.12f;
+        float ey = -0.65f + fwRand() * 0.35f;
+
+        generateLightningBolt(sx, sy, ex, ey, thunderIntensity);
+        lightningVisible  = true;
+        lightningTimer    = 1.0f;
+
+        // Flash brightness scales with bolt size
+        thunderFlashAlpha = 0.10f + thunderIntensity * 0.10f;
+
+        // Fixed interval — same frequency all levels, only SIZE changes
+        thunderTimer = 2.0f + fwRand() * 2.5f;
+    }
+
+    if (lightningVisible)
+    {
+        lightningTimer -= dt * 3.5f;
+        if (lightningTimer <= 0.0f)
+        {
+            lightningTimer   = 0.0f;
+            lightningVisible = false;
+        }
+    }
+}
 
 // ================================================================
 //  DISPLAY
@@ -7523,6 +7799,8 @@ void display()
         drawWinter();
     }
 
+    drawThunderstorm();
+
     // ── FIREWORKS (drawn last, on top of everything) ──
     drawFWFlash();
     drawFireworks();
@@ -7588,7 +7866,7 @@ void update(int value)
     {
         for (int i = 0; i < MAX_RAIN; i++)
         {
-            rainY[i] -= rainSpeed[i];
+            rainY[i] -= rainSpeed[i] * rainSpeedMult;
             if (rainY[i] < -1.0f)
             {
                 rainY[i] = 1.0f;
@@ -7608,12 +7886,15 @@ void update(int value)
     {
         updateWinter();
     }
+    //rain speed
+
 
     // Move the bouncing players (Shajmin)
     updatePlayers();
 
     // ── Update fireworks (55ms per tick) ──
     updateFireworks(0.055f);
+    updateThunderstorm(0.055f);
 
     glutPostRedisplay();
     glutTimerFunc(55, update, 0);
