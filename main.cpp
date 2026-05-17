@@ -55,7 +55,11 @@
 #define MAX_RESTING 55
 #define MAX_RAIN 200
 
-
+// Thunder scaling animation state
+static float thunderScale     = 0.0f;  // 0..1 current scale
+static float thunderScaleDir  = 1.0f;  // +1 = growing, -1 = shrinking
+static float thunderScaleMax  = 0.0f;  // peak scale (set when bolt fires)
+static bool  thunderScaling   = false; // true while animation plays
 // ── Cloud system for spring season ─────────────────────────────────
 #define MAX_CLOUDS 8
 static float cloudX[MAX_CLOUDS];
@@ -7426,15 +7430,29 @@ static void drawThunderstorm()
 
     if (!lightningVisible || lgSegCount == 0) return;
 
-    float alpha = lightningTimer;  // fades 1→0
+    // Current scale factor (0 = invisible, 1 = full size)
+    float sc = thunderScaling ? thunderScale / fmaxf(thunderScaleMax, 0.001f)
+                              : 1.0f;
+    if (sc <= 0.001f) return;
 
-    // Line thickness scales with intensity
-    float outerW = 4.0f + thunderIntensity * 4.0f;  // lvl1=8, lvl2=12, lvl3=16
-    float midW   = 2.0f + thunderIntensity * 2.0f;  // lvl1=4,  lvl2=6,  lvl3=8
-    float coreW  = 0.8f + thunderIntensity * 0.7f;  // lvl1=1.5, lvl2=2.2, lvl3=2.9
+    float alpha = lightningTimer;
+
+    // Width multipliers — all scaled by sc
+    float outerW = (4.0f + thunderIntensity * 4.0f) * sc;
+    float midW   = (2.0f + thunderIntensity * 2.0f) * sc;
+    float coreW  = (0.8f + thunderIntensity * 0.7f) * sc;
+
+    // Push a scale matrix around the bolt's start point so it
+    // appears to "shoot out" from the sky, growing toward the ground.
+    float originX = lgSegX[0];
+    float originY = lgSegY[0];
+
+    glPushMatrix();
+    glTranslatef(originX, originY, 0.0f);
+    glScalef(sc, sc, 1.0f);
+    glTranslatef(-originX, -originY, 0.0f);
 
     // ── MAIN BOLT ──
-    // Outer glow
     glColor4f(0.5f, 0.65f, 1.0f, alpha * 0.35f);
     glLineWidth(outerW);
     glBegin(GL_LINE_STRIP);
@@ -7442,7 +7460,6 @@ static void drawThunderstorm()
         glVertex2f(lgSegX[i], lgSegY[i]);
     glEnd();
 
-    // Mid glow
     glColor4f(0.78f, 0.88f, 1.0f, alpha * 0.65f);
     glLineWidth(midW);
     glBegin(GL_LINE_STRIP);
@@ -7450,7 +7467,6 @@ static void drawThunderstorm()
         glVertex2f(lgSegX[i], lgSegY[i]);
     glEnd();
 
-    // White core
     glColor4f(1.0f, 1.0f, 1.0f, alpha);
     glLineWidth(coreW);
     glBegin(GL_LINE_STRIP);
@@ -7458,11 +7474,10 @@ static void drawThunderstorm()
         glVertex2f(lgSegX[i], lgSegY[i]);
     glEnd();
 
-    // ── BRANCHES (intensity 2 and 3) ──
+    // ── BRANCHES ──
     for (int b = 0; b < branchCount; b++)
     {
         int bSegs = 3 + thunderIntensity;
-
         glColor4f(0.6f, 0.75f, 1.0f, alpha * 0.30f);
         glLineWidth(midW * 0.55f);
         glBegin(GL_LINE_STRIP);
@@ -7478,14 +7493,13 @@ static void drawThunderstorm()
         glEnd();
     }
 
-    // ── GROUND IMPACT GLOW — scales with intensity ──
+    // ── GROUND IMPACT GLOW ──
     float gx  = lgSegX[lgSegCount];
     float gy  = lgSegY[lgSegCount];
-    float gRx = 0.06f + thunderIntensity * 0.055f;  // lvl1=0.115, lvl2=0.17, lvl3=0.225
+    float gRx = (0.06f + thunderIntensity * 0.055f) * sc;
     float gRy = gRx * 0.40f;
-
     glBegin(GL_TRIANGLE_FAN);
-    glColor4f(0.85f, 0.92f, 1.0f, alpha * 0.70f);
+    glColor4f(0.85f, 0.92f, 1.0f, alpha * 0.70f * sc);
     glVertex2f(gx, gy);
     for (int k = 0; k <= 24; k++)
     {
@@ -7495,33 +7509,66 @@ static void drawThunderstorm()
     }
     glEnd();
 
+    glPopMatrix();
     glLineWidth(1.0f);
 }
 static void updateThunderstorm(float dt)
 {
     if (!thunderMode) return;
 
+    // ── Scale animation update ──
+    if (thunderScaling)
+    {
+        const float GROW_SPEED  = 6.0f;   // units per second to grow
+        const float SHRINK_SPEED = 3.5f;  // units per second to shrink
+
+        if (thunderScaleDir > 0.0f)       // growing phase
+        {
+            thunderScale += GROW_SPEED * dt;
+            if (thunderScale >= thunderScaleMax)
+            {
+                thunderScale    = thunderScaleMax;
+                thunderScaleDir = -1.0f;  // switch to shrinking
+            }
+        }
+        else                               // shrinking phase
+        {
+            thunderScale -= SHRINK_SPEED * dt;
+            if (thunderScale <= 0.0f)
+            {
+                thunderScale   = 0.0f;
+                thunderScaling = false;
+                lightningVisible = false;
+            }
+        }
+        // Keep lightningTimer in sync so drawThunderstorm alpha works
+        lightningTimer = thunderScale / fmaxf(thunderScaleMax, 0.001f);
+    }
+
+    // ── Interval countdown ──
     thunderTimer -= dt;
     if (thunderTimer <= 0.0f)
     {
-        // Strike from random sky position
         float sx = fwRandSym() * 0.85f;
         float sy = 0.60f + fwRand() * 0.35f;
         float ex = sx + fwRandSym() * 0.12f;
         float ey = -0.65f + fwRand() * 0.35f;
-
         generateLightningBolt(sx, sy, ex, ey, thunderIntensity);
+
         lightningVisible  = true;
         lightningTimer    = 1.0f;
 
-        // Flash brightness scales with bolt size
-        thunderFlashAlpha = 0.10f + thunderIntensity * 0.10f;
+        // Kick off the scale animation
+        thunderScaleMax  = 1.0f;
+        thunderScale     = 0.0f;
+        thunderScaleDir  = 1.0f;
+        thunderScaling   = true;
 
-        // Fixed interval — same frequency all levels, only SIZE changes
+        thunderFlashAlpha = 0.10f + thunderIntensity * 0.10f;
         thunderTimer = 2.0f + fwRand() * 2.5f;
     }
 
-    if (lightningVisible)
+    if (lightningVisible && !thunderScaling)
     {
         lightningTimer -= dt * 3.5f;
         if (lightningTimer <= 0.0f)
@@ -7531,7 +7578,6 @@ static void updateThunderstorm(float dt)
         }
     }
 }
-
 // ================================================================
 //  DISPLAY
 // ================================================================
