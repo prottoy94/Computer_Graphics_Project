@@ -1,4 +1,5 @@
 #Computer Graphics Project Collaborated by Sadia contributed in rainy season and Basundhara buildings
+Added thunderstrom sound and thunderstrom by pressing t and made rain speed up using p and slow down by o 
 
 
 #👤 Contribution Log — Prottoy
