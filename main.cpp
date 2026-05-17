@@ -21,6 +21,17 @@
 //    • RAINY MODE ('r') – raindrops, umbrellas, gray sky, wet ground
 //    • SUMMER MODE ('g') – mangoes, jackfruits, heat haze, stall, birds
 //    • FIREWORKS MODE ('f') – spectacular fireworks display!
+//    • RAIN SOUND + SPEED – 'r' starts rain w/ sound,
+//                            'p' speeds rain up, 'o' slows it down  [Sadia]
+//    • THUNDERSTORM ('t') – cycles intensity 1→2→3→off
+//                           jagged lightning + flash + sky bolts    [Sadia]
+//
+//  Dynamic transformations (Emad):
+//    • TRANSLATION : car speed via ',' (slower) and '.' (faster)
+//    • SCALING     : autumn leaf size via 'k' (smaller) and 'l' (larger)
+//                    — applied with glScalef() in drawAutumn()
+//    • ROTATION    : autumn leaves spin as they fall — per-leaf angle
+//                    auto-advances each tick, applied via glRotatef()
 //
 //  Draw order (painter's algorithm, back → front):
 //    1. Sky
@@ -39,27 +50,30 @@
 //  Coordinate space : -1.0 to +1.0 (X and Y)
 //  Window size      : 1400 x 800
 // ================================================================
-#include <windows.h>
-#include <GL/freeglut.h>
+// ================================================================
+// Cross-platform OpenGL / GLUT includes.
+//   • Windows  → use freeglut + windows.h + mmsystem.h for MCI audio
+//   • macOS    → use the framework header (no windows.h, no MCI)
+// ================================================================
+#ifdef _WIN32
+    #include <windows.h>
+    #include <GL/freeglut.h>
+    #include <mmsystem.h>
+    #pragma comment(lib, "winmm.lib")
+#else
+    #include <GLUT/glut.h>      // macOS framework
+#endif
+
 #include <math.h>
 #include <stdlib.h>
-#include <stdio.h>      // ← ADD THIS LINE for sprintf, printf, etc.
-#include <string.h>     // ← ADD THIS LINE for strcat, strlen, etc.
-
-// Add MCI sound support for fireworks
-#include <mmsystem.h>
-#pragma comment(lib, "winmm.lib")
+#include <stdio.h>      // sprintf, printf, etc.
+#include <string.h>     // strcat, strlen, etc.
 
 #define PI 3.14159265f
 #define MAX_FALLING 85
 #define MAX_RESTING 55
 #define MAX_RAIN 200
 
-// Thunder scaling animation state
-static float thunderScale     = 0.0f;  // 0..1 current scale
-static float thunderScaleDir  = 1.0f;  // +1 = growing, -1 = shrinking
-static float thunderScaleMax  = 0.0f;  // peak scale (set when bolt fires)
-static bool  thunderScaling   = false; // true while animation plays
 // ── Cloud system for spring season ─────────────────────────────────
 #define MAX_CLOUDS 8
 static float cloudX[MAX_CLOUDS];
@@ -77,6 +91,21 @@ static float leafX[MAX_LEAVES];     // X position of each leaf
 static float leafY[MAX_LEAVES];     // Y position of each leaf
 static float leafSpeed[MAX_LEAVES]; // how fast it falls
 static int leafColor[MAX_LEAVES];   // 0=orange, 1=yellow, 2=brown, 3=red
+
+// ── Dynamic transformation state (Emad) ───────────────────────────
+// These globals back the three required transformations:
+//   • carSpeedMult — translation scalar for road traffic.
+//                    Adjusted at runtime via ',' (slower) and '.' (faster).
+//   • leafScale    — scaling factor applied to every falling leaf via
+//                    glScalef().  Adjusted via 'k' (smaller) and 'l' (larger).
+//   • leafAngle[]  — per-leaf rotation angle in degrees, applied via
+//                    glRotatef().  Auto-increments every tick by leafSpin[].
+//   • leafSpin[]   — per-leaf spin speed (deg/tick), randomised once at
+//                    init so each leaf rotates at its own pace + direction.
+static float carSpeedMult = 1.0f;       // 1.0 = default traffic speed
+static float leafScale    = 1.0f;       // 1.0 = default leaf size
+static float leafAngle[MAX_LEAVES];     // current rotation of each leaf (deg)
+static float leafSpin[MAX_LEAVES];      // per-leaf rotation speed (deg/tick)
 
 // ── Winter season state (Shajmin) ─────────────────────────────────
 // Winter = white snowflakes falling slowly.
@@ -107,12 +136,13 @@ static float soccerVY[SOCCER_COUNT]; // football player Y velocity
 
 static bool springMode = true; // true = spring (petals), false = normal
 static bool rainMode = false;  // true = rainy season, false = dry
-static int rainSoundPlaying = 0;
+static int  rainSoundPlaying = 0;   // [Sadia] 1 while rain WAV is looping
+
 // ── Rain particles (Sadia) ────────────────────────────────────────
 static float rainX[MAX_RAIN];
 static float rainY[MAX_RAIN];
 static float rainSpeed[MAX_RAIN];
-static float rainSpeedMult = 1.0f;
+static float rainSpeedMult = 1.0f;  // [Sadia] adjustable via 'p' / 'o'
 
 // ── Wind animation state (used only by tree sway / petal physics) ──
 static float windAngle = 0.0f;   // current sway angle (degrees)
@@ -127,20 +157,26 @@ static float breezeSpeed = 0.016f;
 static float cloudScale = 1.0f;   // 1.0 = default size, +/- keys adjust this
 static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
 
-// ── [FIREWORKS SYSTEM] ─────────────────────────────────────────────
-// Firework tunables
-#define FW_MAX_ROCKETS    24      // max simultaneous rockets in flight
-#define FW_MAX_PARTICLES  4200    // total particle pool (all bursts combined)
-#define FW_SOUND_DURATION 5.0f   // seconds — matches fireWorkSoundV3.m4a length
-
-
-//Thunderstrom sadia
+// ── Thunderstorm state (Sadia) ────────────────────────────────────
+// Triggered by pressing 't'.  Each 't' press steps intensity:
+//   1st press: intensity=1 (small bolt)
+//   2nd press: intensity=2 (bigger, +1 branch)
+//   3rd press: intensity=3 (biggest, +3 branches)
+//   4th press: turn off
+// The bolt is drawn with glScalef so it appears to "grow" from the
+// sky each time it strikes — another use of dynamic scaling.
 static bool  thunderMode      = false;
-static int   thunderIntensity = 1;       // 1, 2, 3 — bolt scale level
+static int   thunderIntensity = 1;
 static float thunderTimer     = 0.0f;
 static float thunderFlashAlpha= 0.0f;
 static bool  lightningVisible = false;
 static float lightningTimer   = 0.0f;
+
+// Thunder scaling animation (the "grow then shrink" effect on each strike)
+static float thunderScale     = 0.0f;
+static float thunderScaleDir  = 1.0f;
+static float thunderScaleMax  = 0.0f;
+static bool  thunderScaling   = false;
 
 #define MAX_LIGHTNING_SEGS 16
 static float lgSegX[MAX_LIGHTNING_SEGS + 1];
@@ -152,6 +188,13 @@ static int   lgSegCount = 0;
 static float branchX[MAX_BRANCHES][9];
 static float branchY[MAX_BRANCHES][9];
 static int   branchCount = 0;
+
+// ── [FIREWORKS SYSTEM] ─────────────────────────────────────────────
+// Firework tunables
+#define FW_MAX_ROCKETS    24      // max simultaneous rockets in flight
+#define FW_MAX_PARTICLES  4200    // total particle pool (all bursts combined)
+#define FW_SOUND_DURATION 5.0f   // seconds — matches fireWorkSoundV3.m4a length
+
 // Rocket types
 enum FWRocketType {
     FW_CHRYSANTHEMUM = 0,  // dense full sphere — classic gold
@@ -580,10 +623,15 @@ static void fwLaunchRocket(int siteIdx)
 
     fwPickColour(t, rk->r, rk->g, rk->b, rk->r2, rk->g2, rk->b2);
 }
-//sound of rain
 
+// ================================================================
+//  Rain sound (Sadia) — kept cross-platform like fwPlaySound() so
+//  the project still compiles on macOS as well as Windows.
+// ================================================================
 static void playRainSound()
 {
+#ifdef _WIN32
+    // ---- Windows: MCI with full-path detection, then PlaySound fallback ----
     mciSendString("close rainsnd", NULL, 0, NULL);
 
     char fullPath[MAX_PATH];
@@ -595,70 +643,120 @@ static void playRainSound()
 
     if (mciSendString(openCmd, NULL, 0, NULL) == 0)
     {
-        mciSendString("play rainsnd repeat", NULL, 0, NULL);  // repeat = loops forever
+        mciSendString("play rainsnd repeat", NULL, 0, NULL);  // loops forever
         rainSoundPlaying = 1;
         return;
     }
 
-    // Fallback
+    // Fallback to PlaySound API
     PlaySound("rain.wav", NULL, SND_FILENAME | SND_ASYNC | SND_LOOP);
     rainSoundPlaying = 1;
+
+#elif __APPLE__
+    // ---- macOS: use afplay inside a flag-controlled loop ----
+    // The loop checks /tmp/aiub_rain_active each iteration.  Removing
+    // the flag file in stopRainSound() lets the loop exit cleanly.
+    // (Plain `pkill afplay` on its own would NOT stop the loop —
+    //  the shell would just relaunch afplay on the next iteration.)
+    system("pkill -f 'afplay rain.wav' 2>/dev/null");   // belt-and-braces cleanup
+    system("touch /tmp/aiub_rain_active 2>/dev/null");
+    if (system("(while [ -f /tmp/aiub_rain_active ]; do afplay rain.wav 2>/dev/null; done) >/dev/null 2>&1 &") == 0)
+    {
+        rainSoundPlaying = 1;
+        return;
+    }
+    // Try one level up (build folder layout)
+    if (system("(while [ -f /tmp/aiub_rain_active ]; do afplay ../rain.wav 2>/dev/null; done) >/dev/null 2>&1 &") == 0)
+    {
+        rainSoundPlaying = 1;
+        return;
+    }
+#endif
 }
 
 static void stopRainSound()
 {
+#ifdef _WIN32
     mciSendString("stop rainsnd", NULL, 0, NULL);
     mciSendString("close rainsnd", NULL, 0, NULL);
     PlaySound(NULL, NULL, 0);
+#elif __APPLE__
+    // 1) Remove the flag — the while loop exits on its next check
+    system("rm -f /tmp/aiub_rain_active 2>/dev/null");
+    // 2) Kill any afplay currently mid-playback so silence is immediate
+    system("pkill -f 'afplay rain.wav' 2>/dev/null");
+#endif
     rainSoundPlaying = 0;
+}
+
+// ================================================================
+//  Reset thunderstorm (Sadia, fix by Emad)
+//  Centralised so every season-switch key can wipe thunder state
+//  in one line.  Without this, the lightning + flash kept rendering
+//  even after switching to spring / autumn / winter / summer.
+// ================================================================
+static void resetThunderstorm()
+{
+    thunderMode       = false;
+    lightningVisible  = false;
+    thunderFlashAlpha = 0.0f;
+    thunderScaling    = false;
+    thunderScale      = 0.0f;
+    thunderIntensity  = 1;
 }
 
 // Play sound for fireworks
 static void fwPlaySound()
 {
-    // First, try to play a system beep as test (this ALWAYS works)
-    // Comment this out after you confirm sound works
-    //Beep(1000, 200);
-
-    // Method 1: Try MCI with full path detection
+#ifdef _WIN32
+    // ---- Windows: original code unchanged ----
     char fullPath[MAX_PATH];
     GetCurrentDirectory(MAX_PATH, fullPath);
     strcat(fullPath, "\\fireWorkSoundV3.wav");
 
-    // Close any previous sound
     mciSendString("close fwsnd", NULL, 0, NULL);
 
-    // Try to open with full path
     char openCmd[256];
     sprintf(openCmd, "open \"%s\" type waveaudio alias fwsnd", fullPath);
-
     if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
-        // Successfully opened, now play it
         mciSendString("play fwsnd", NULL, 0, NULL);
         return;
     }
 
-    // Method 2: Try relative path
     sprintf(openCmd, "open \"fireWorkSoundV3.wav\" type waveaudio alias fwsnd");
     if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
         mciSendString("play fwsnd", NULL, 0, NULL);
         return;
     }
 
-    // Method 3: Try using PlaySound API (simpler)
-    if (PlaySound("fireWorkSoundV3.wav", NULL, SND_FILENAME | SND_ASYNC)) {
-        return;
-    }
-
-    // Method 4: Try Windows default sounds as fallback
+    if (PlaySound("fireWorkSoundV3.wav", NULL, SND_FILENAME | SND_ASYNC)) return;
     PlaySound("C:\\Windows\\Media\\tada.wav", NULL, SND_FILENAME | SND_ASYNC);
+
+#elif __APPLE__
+    // ---- macOS: use afplay ----
+    // Method 1: Try relative path (same folder as the executable)
+    if (system("afplay fireWorkSoundV3.wav &") == 0) return;
+
+    // Method 2: Try one level up (common when running from build folder)
+    if (system("afplay ../fireWorkSoundV3.wav &") == 0) return;
+
+    // Method 3: Fallback — macOS system sound
+    system("afplay /System/Library/Sounds/Glass.aiff &");
+#endif
 }
 
 static void fwStopSound()
 {
+#ifdef _WIN32
+    // ---- Windows: original code unchanged ----
     mciSendString("stop fwsnd", NULL, 0, NULL);
     mciSendString("close fwsnd", NULL, 0, NULL);
-    PlaySound(NULL, NULL, 0); // Stop PlaySound if using that
+    PlaySound(NULL, NULL, 0);
+
+#elif __APPLE__
+    // ---- macOS: kill any running afplay process ----
+    system("pkill -x afplay 2>/dev/null");
+#endif
 }
 
 // Initialize fireworks system
@@ -4974,34 +5072,45 @@ static void updatePetals() // [Prottoy]
 // ================================================================
 static void updateTraffic()
 {
+    // ---- Move every car ----
     for (int i = 0; i < 8; i++)
     {
-        if (carLane[i] == 0)
+        if (carLane[i] == 0) // top lane = going RIGHT
         {
-             carX[i] += 0.0030f;
-            if (carX[i] > 1.10f)
-                carX[i] = -1.10f;
+            carX[i] += 0.0030f * carSpeedMult;  // dynamic translation speed [Emad]
+            if (carX[i] > 1.10f) // gone off the right edge?
+            {
+                carX[i] = -1.10f; // wrap back to the left edge
+            }
         }
-        else
+        else // bottom lane = going LEFT
         {
-            carX[i] -= 0.0028f;
-            if (carX[i] < -1.10f)
-                carX[i] = 1.10f;
+            carX[i] -= 0.0028f * carSpeedMult;  // dynamic translation speed [Emad]
+            if (carX[i] < -1.10f) // gone off the left edge?
+            {
+                carX[i] = 1.10f; // wrap back to the right edge
+            }
         }
     }
 
-    // pedestrians unchanged — no multiplier applied here
+    // ---- Move every pedestrian ----
     for (int i = 0; i < 6; i++)
     {
-        if (pedRow[i] == 0)
+        if (pedRow[i] == 0) // top kerb = going RIGHT
         {
             pedX[i] += 0.0017f;
-            if (pedX[i] > 1.10f) pedX[i] = -1.10f;
+            if (pedX[i] > 1.10f)
+            {
+                pedX[i] = -1.10f;
+            }
         }
-        else
+        else // bottom kerb = going LEFT
         {
             pedX[i] -= 0.0015f;
-            if (pedX[i] < -1.10f) pedX[i] = 1.10f;
+            if (pedX[i] < -1.10f)
+            {
+                pedX[i] = 1.10f;
+            }
         }
     }
 }
@@ -5654,6 +5763,14 @@ static void initAutumn() // [Emad]
         leafY[i] = -1.0f + (rand() % 200) / 100.0f;      // -1 .. +1
         leafSpeed[i] = 0.003f + (rand() % 10) / 2000.0f; // slow fall
         leafColor[i] = rand() % 4;                       // 0..3
+
+        // ── Rotation state for dynamic glRotatef() (Emad) ──
+        // Random starting angle so leaves don't all face the same way,
+        // and a random spin speed (in deg/tick) in the range -3..+3 so
+        // some leaves rotate clockwise, some counter-clockwise, and a
+        // few barely rotate at all (= more realistic).
+        leafAngle[i] = (float)(rand() % 360);                       // 0..359 deg
+        leafSpin[i]  = (((rand() % 200) / 100.0f) - 1.0f) * 3.0f;   // -3..+3 deg/tick
     }
 }
 
@@ -5683,16 +5800,28 @@ static void drawAutumn() // [Emad]
             glColor3ub(180, 40, 30); // red
         }
 
-        float lx = leafX[i];
-        float ly = leafY[i];
+        // ── Dynamic transformations via OpenGL matrix stack (Emad) ──
+        // Order is intentional and important:
+        //   1) glTranslatef : move the origin to where the leaf actually is
+        //   2) glRotatef    : spin the leaf around its own centre (Z axis)
+        //   3) glScalef     : grow/shrink the leaf (user-controlled by k/l)
+        // The leaf shape itself is drawn AROUND THE ORIGIN (0,0), so that
+        // rotation and scaling pivot around the leaf's centre — not around
+        // the world origin.  glPushMatrix/glPopMatrix isolates these
+        // transforms so they don't leak into anything else drawn after.
+        glPushMatrix();
+        glTranslatef(leafX[i], leafY[i], 0.0f);     // dynamic translation
+        glRotatef(leafAngle[i], 0.0f, 0.0f, 1.0f);  // dynamic rotation (animated)
+        glScalef(leafScale, leafScale, 1.0f);       // dynamic scaling (key-controlled)
 
-        // Draw a tiny diamond shape (4 vertices = a small quad rotated 45 deg)
+        // Diamond drawn around origin (matrix handles the actual placement)
         glBegin(GL_QUADS);
-        glVertex2f(lx, ly + 0.012f); // top
-        glVertex2f(lx + 0.010f, ly); // right
-        glVertex2f(lx, ly - 0.012f); // bottom
-        glVertex2f(lx - 0.010f, ly); // left
+        glVertex2f( 0.0f,    0.012f); // top
+        glVertex2f( 0.010f,  0.0f);   // right
+        glVertex2f( 0.0f,   -0.012f); // bottom
+        glVertex2f(-0.010f,  0.0f);   // left
         glEnd();
+        glPopMatrix();
     }
 }
 
@@ -5706,6 +5835,15 @@ static void updateAutumn() // [Emad]
     for (int i = 0; i < MAX_LEAVES; i++)
     {
         leafY[i] -= leafSpeed[i]; // fall down
+
+        // ── Advance per-leaf rotation angle (Emad) ──
+        // Each leaf has its own spin speed (deg/tick), so they all rotate
+        // independently — some clockwise, some counter-clockwise.  Wrap
+        // the angle to keep it bounded; glRotatef handles any value but
+        // wrapping avoids float drift over very long sessions.
+        leafAngle[i] += leafSpin[i];
+        if (leafAngle[i] >= 360.0f) leafAngle[i] -= 360.0f;
+        if (leafAngle[i] <    0.0f) leafAngle[i] += 360.0f;
 
         if (leafY[i] < -1.0f)
         {
@@ -6449,27 +6587,19 @@ void keyboard(unsigned char key, int x, int y)
         autumnMode = false;
         winterMode = false;
         summerMode = false;
+        resetThunderstorm();  // kill lightning + sky flash
         stopRainSound();
         break;
 
-    case 'r':
-    rainMode   = true;
-    springMode = false;
-    autumnMode = false;
-    winterMode = false;
-    summerMode = false;
-    if (!rainSoundPlaying)
-        playRainSound();   // ← start rain sound
-    break;
-    case 'p':   // speed up rain
-    rainSpeedMult += 0.5f;
-    if (rainSpeedMult > 5.0f) rainSpeedMult = 5.0f;
-    break;
-
-case 'o':   // slow down rain
-    rainSpeedMult -= 0.5f;
-    if (rainSpeedMult < 0.0f) rainSpeedMult = 0.0f;
-    break;
+    case 'r': // Rainy season mode (rain drops, umbrellas)
+        rainMode   = true;
+        springMode = false;
+        autumnMode = false;
+        winterMode = false;
+        summerMode = false;
+        resetThunderstorm();  // plain rain — no thunder unless 't' pressed
+        if (!rainSoundPlaying) playRainSound();
+        break;
 
     case 'a': // Autumn mode — falling leaves (Emad)
         autumnMode = true;
@@ -6477,6 +6607,7 @@ case 'o':   // slow down rain
         rainMode   = false;
         winterMode = false;
         summerMode = false;
+        resetThunderstorm();
         stopRainSound();
         break;
 
@@ -6486,6 +6617,7 @@ case 'o':   // slow down rain
         rainMode   = false;
         autumnMode = false;
         summerMode = false;
+        resetThunderstorm();
         stopRainSound();
         break;
 
@@ -6495,6 +6627,7 @@ case 'o':   // slow down rain
         rainMode   = false;
         autumnMode = false;
         winterMode = false;
+        resetThunderstorm();
         stopRainSound();
         break;
     case '+':   // increase breeze speed
@@ -6527,38 +6660,82 @@ case 'o':   // slow down rain
         if (cloudSpeedMult > 5.0f) cloudSpeedMult = 5.0f;  // cap at 5x
         break;
 
-        case 't':
-    if (!thunderMode)
-    {
-        // First press — turn on at level 1
-        thunderMode       = true;
-        rainMode          = true;
-        springMode        = false;
-        autumnMode        = false;
-        winterMode        = false;
-        summerMode        = false;
-        thunderIntensity  = 1;
-        thunderTimer      = 0.4f;   // first bolt comes quickly
-        lightningVisible  = false;
-        thunderFlashAlpha = 0.0f;
-    }
-    else
-    {
-        thunderIntensity++;
-        if (thunderIntensity > 3)
+    // ── Dynamic translation: car speed control (Emad) ──
+    // ',' slows the cars down (can fully stop them at 0.0).
+    // '.' speeds them up.  Multiplier is applied inside updateTraffic().
+    case ',':
+    case '<':
+        carSpeedMult -= 0.2f;
+        if (carSpeedMult < 0.0f) carSpeedMult = 0.0f;  // can fully stop
+        break;
+
+    case '.':
+    case '>':
+        carSpeedMult += 0.2f;
+        if (carSpeedMult > 5.0f) carSpeedMult = 5.0f;  // cap at 5x default
+        break;
+
+    // ── Dynamic scaling: autumn leaf size (Emad) ──
+    // 'k' shrinks every falling leaf, 'l' grows them.  This is read
+    // inside drawAutumn() and passed straight to glScalef().
+    case 'k':
+        leafScale -= 0.2f;
+        if (leafScale < 0.2f) leafScale = 0.2f;  // floor — never disappear
+        break;
+
+    case 'l':
+        leafScale += 0.2f;
+        if (leafScale > 4.0f) leafScale = 4.0f;  // cap at 4x default
+        break;
+
+    // ── Rain speed control (Sadia) ──
+    case 'p':   // speed up rain
+        rainSpeedMult += 0.5f;
+        if (rainSpeedMult > 5.0f) rainSpeedMult = 5.0f;
+        break;
+
+    case 'o':   // slow down rain
+        rainSpeedMult -= 0.5f;
+        if (rainSpeedMult < 0.0f) rainSpeedMult = 0.0f;
+        break;
+
+    // ── Thunderstorm cycle (Sadia) ──
+    // 1st press: intensity 1 (small).
+    // 2nd press: intensity 2 (bigger + 1 branch).
+    // 3rd press: intensity 3 (biggest + 3 branches).
+    // 4th press: turn it off again.
+    case 't':
+        if (!thunderMode)
         {
-            // Fourth press — turn off
-            thunderMode      = false;
-            thunderIntensity = 1;
-            lightningVisible = false;
-            thunderFlashAlpha= 0.0f;
+            thunderMode       = true;
+            rainMode          = true;
+            springMode        = false;
+            autumnMode        = false;
+            winterMode        = false;
+            summerMode        = false;
+            thunderIntensity  = 1;
+            thunderTimer      = 0.4f;   // first bolt comes quickly
+            lightningVisible  = false;
+            thunderFlashAlpha = 0.0f;
+            if (!rainSoundPlaying) playRainSound();
         }
         else
         {
-            thunderTimer = 0.3f;  // show new size quickly
+            thunderIntensity++;
+            if (thunderIntensity > 3)
+            {
+                // 4th press — turn off
+                thunderMode      = false;
+                thunderIntensity = 1;
+                lightningVisible = false;
+                thunderFlashAlpha= 0.0f;
+            }
+            else
+            {
+                thunderTimer = 0.3f;  // show new size quickly
+            }
         }
-    }
-    break;
+        break;
 
     // ── FIREWORKS KEY ────────────────────────────────────────────
     case 'f':   // start fireworks show
@@ -7349,10 +7526,14 @@ static void updateSpringClouds()
         }
     }
 }
-//thunderstrom
+
+// ================================================================
+//  THUNDERSTORM (Sadia) — jagged lightning bolts with scale grow,
+//  optional branches, sky flash, and ground impact glow.
+// ================================================================
 static void generateLightningBolt(float startX, float startY,
-                                   float endX,   float endY,
-                                   int intensity)
+                                  float endX,   float endY,
+                                  int intensity)
 {
     // More segments = more jagged at higher intensity
     lgSegCount = 4 + intensity * 3;  // lvl1=7, lvl2=10, lvl3=13
@@ -7382,12 +7563,10 @@ static void generateLightningBolt(float startX, float startY,
         int numBranches = (intensity == 2) ? 1 : MAX_BRANCHES;
         for (int b = 0; b < numBranches && b < MAX_BRANCHES; b++)
         {
-            // Branch splits off from a random mid-segment
             int splitSeg = 2 + (int)(fwRand() * (lgSegCount - 3));
             float bStartX = lgSegX[splitSeg];
             float bStartY = lgSegY[splitSeg];
 
-            // Branch goes off at an angle
             float bLen    = 0.15f + intensity * 0.08f;
             float bAngle  = fwRandSym() * 0.9f;
             float bEndX   = bStartX + cosf(bAngle) * bLen;
@@ -7412,6 +7591,7 @@ static void generateLightningBolt(float startX, float startY,
         }
     }
 }
+
 static void drawThunderstorm()
 {
     if (!thunderMode) return;
@@ -7437,7 +7617,6 @@ static void drawThunderstorm()
 
     float alpha = lightningTimer;
 
-    // Width multipliers — all scaled by sc
     float outerW = (4.0f + thunderIntensity * 4.0f) * sc;
     float midW   = (2.0f + thunderIntensity * 2.0f) * sc;
     float coreW  = (0.8f + thunderIntensity * 0.7f) * sc;
@@ -7512,15 +7691,16 @@ static void drawThunderstorm()
     glPopMatrix();
     glLineWidth(1.0f);
 }
+
 static void updateThunderstorm(float dt)
 {
     if (!thunderMode) return;
 
-    // ── Scale animation update ──
+    // ── Scale animation update (grow then shrink) ──
     if (thunderScaling)
     {
-        const float GROW_SPEED  = 6.0f;   // units per second to grow
-        const float SHRINK_SPEED = 3.5f;  // units per second to shrink
+        const float GROW_SPEED   = 6.0f;
+        const float SHRINK_SPEED = 3.5f;
 
         if (thunderScaleDir > 0.0f)       // growing phase
         {
@@ -7528,24 +7708,23 @@ static void updateThunderstorm(float dt)
             if (thunderScale >= thunderScaleMax)
             {
                 thunderScale    = thunderScaleMax;
-                thunderScaleDir = -1.0f;  // switch to shrinking
+                thunderScaleDir = -1.0f;
             }
         }
-        else                               // shrinking phase
+        else                              // shrinking phase
         {
             thunderScale -= SHRINK_SPEED * dt;
             if (thunderScale <= 0.0f)
             {
-                thunderScale   = 0.0f;
-                thunderScaling = false;
+                thunderScale     = 0.0f;
+                thunderScaling   = false;
                 lightningVisible = false;
             }
         }
-        // Keep lightningTimer in sync so drawThunderstorm alpha works
         lightningTimer = thunderScale / fmaxf(thunderScaleMax, 0.001f);
     }
 
-    // ── Interval countdown ──
+    // ── Interval countdown — fire a new bolt when timer expires ──
     thunderTimer -= dt;
     if (thunderTimer <= 0.0f)
     {
@@ -7558,7 +7737,6 @@ static void updateThunderstorm(float dt)
         lightningVisible  = true;
         lightningTimer    = 1.0f;
 
-        // Kick off the scale animation
         thunderScaleMax  = 1.0f;
         thunderScale     = 0.0f;
         thunderScaleDir  = 1.0f;
@@ -7578,6 +7756,7 @@ static void updateThunderstorm(float dt)
         }
     }
 }
+
 // ================================================================
 //  DISPLAY
 // ================================================================
@@ -7845,9 +8024,8 @@ void display()
         drawWinter();
     }
 
-    drawThunderstorm();
-
     // ── FIREWORKS (drawn last, on top of everything) ──
+    drawThunderstorm();  // [Sadia] — lightning + flash + impact
     drawFWFlash();
     drawFireworks();
 
@@ -7912,7 +8090,7 @@ void update(int value)
     {
         for (int i = 0; i < MAX_RAIN; i++)
         {
-            rainY[i] -= rainSpeed[i] * rainSpeedMult;
+            rainY[i] -= rainSpeed[i] * rainSpeedMult;  // [Sadia] adjustable via p/o
             if (rainY[i] < -1.0f)
             {
                 rainY[i] = 1.0f;
@@ -7932,15 +8110,13 @@ void update(int value)
     {
         updateWinter();
     }
-    //rain speed
-
 
     // Move the bouncing players (Shajmin)
     updatePlayers();
 
     // ── Update fireworks (55ms per tick) ──
     updateFireworks(0.055f);
-    updateThunderstorm(0.055f);
+    updateThunderstorm(0.055f);  // [Sadia]
 
     glutPostRedisplay();
     glutTimerFunc(55, update, 0);
