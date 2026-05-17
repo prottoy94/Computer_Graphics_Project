@@ -33,6 +33,18 @@
 //    • ROTATION    : autumn leaves spin as they fall — per-leaf angle
 //                    auto-advances each tick, applied via glRotatef()
 //
+//   [Shajmin]:
+//    • TRANSLATION : sports player speed via 'h' (slower) and 'j' (faster)
+//                    — multiplier applied in updatePlayers() to every
+//                      basketball and football player                    [Shajmin]
+//    • SCALING     : winter snowflake size via 'v' (smaller) and 'b' (larger)
+//                    — applied with glScalef() in drawWinter()           [Shajmin]
+//    • ROTATION    : parking lot entry arm via 'u' (open) and 'i' (close)
+//                    — applied with glRotatef() in drawParkingArm(),
+//                      eases smoothly between 0° (horizontal/closed) and
+//                      ~85° (vertical/open) so the rotation is clearly
+//                      visible across multiple frames                    [Shajmin]
+//
 //  Draw order (painter's algorithm, back → front):
 //    1. Sky
 //    2. Sun
@@ -56,18 +68,18 @@
 //   • macOS    → use the framework header (no windows.h, no MCI)
 // ================================================================
 #ifdef _WIN32
-    #include <windows.h>
-    #include <GL/freeglut.h>
-    #include <mmsystem.h>
-    #pragma comment(lib, "winmm.lib")
+#include <windows.h>
+#include <GL/freeglut.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #else
-    #include <GLUT/glut.h>      // macOS framework
+#include <GLUT/glut.h> // macOS framework
 #endif
 
 #include <math.h>
 #include <stdlib.h>
-#include <stdio.h>      // sprintf, printf, etc.
-#include <string.h>     // strcat, strlen, etc.
+#include <stdio.h>  // sprintf, printf, etc.
+#include <string.h> // strcat, strlen, etc.
 
 #define PI 3.14159265f
 #define MAX_FALLING 85
@@ -102,10 +114,29 @@ static int leafColor[MAX_LEAVES];   // 0=orange, 1=yellow, 2=brown, 3=red
 //                    glRotatef().  Auto-increments every tick by leafSpin[].
 //   • leafSpin[]   — per-leaf spin speed (deg/tick), randomised once at
 //                    init so each leaf rotates at its own pace + direction.
-static float carSpeedMult = 1.0f;       // 1.0 = default traffic speed
-static float leafScale    = 1.0f;       // 1.0 = default leaf size
-static float leafAngle[MAX_LEAVES];     // current rotation of each leaf (deg)
-static float leafSpin[MAX_LEAVES];      // per-leaf rotation speed (deg/tick)
+static float carSpeedMult = 1.0f;   // 1.0 = default traffic speed
+static float leafScale = 1.0f;      // 1.0 = default leaf size
+static float leafAngle[MAX_LEAVES]; // current rotation of each leaf (deg)
+static float leafSpin[MAX_LEAVES];  // per-leaf rotation speed (deg/tick)
+
+// ──  Dynamic transformation state (Shajmin) ───────────────────
+// These globals back three additional required transformations:
+//   • playerSpeedMult — translation scalar for sports players.
+//                       Adjusted via 'h' (slower) and 'j' (faster).
+//                       Applied inside updatePlayers() to every
+//                       basketball and football player.
+//   • snowScale       — scaling factor applied to every snowflake
+//                       in winter mode via glScalef(). Adjusted via
+//                       'v' (smaller) and 'b' (larger).
+//   • parkingArmAngle — current rotation (deg) of the parking lot
+//                       entry arm. 0 = closed (horizontal), ~85 =
+//                       open (nearly vertical). Eased towards
+//                       parkingArmTarget every tick so the rotation
+//                       animates smoothly and is clearly visible.
+static float playerSpeedMult = 1.0f;  // 1.0 = default player speed   [Shajmin]
+static float snowScale = 1.0f;        // 1.0 = default snowflake size [Shajmin]
+static float parkingArmAngle = 0.0f;  // current arm angle (deg)      [Shajmin]
+static float parkingArmTarget = 0.0f; // target arm angle (deg)       [Shajmin]
 
 // ── Winter season state (Shajmin) ─────────────────────────────────
 // Winter = white snowflakes falling slowly.
@@ -115,7 +146,7 @@ static float snowX[MAX_SNOW];     // X position of each snowflake
 static float snowY[MAX_SNOW];     // Y position of each snowflake
 static float snowSpeed[MAX_SNOW]; // how fast it falls
 
-static bool summerMode = false;   // toggled by pressing 'g'
+static bool summerMode = false; // toggled by pressing 'g'
 
 // ── Moving sports players (Shajmin) ───────────────────────────────
 // 4 basketball players + 6 football players. Each one has its own
@@ -134,15 +165,15 @@ static float soccerY[SOCCER_COUNT];  // football player Y
 static float soccerVX[SOCCER_COUNT]; // football player X velocity
 static float soccerVY[SOCCER_COUNT]; // football player Y velocity
 
-static bool springMode = true; // true = spring (petals), false = normal
-static bool rainMode = false;  // true = rainy season, false = dry
-static int  rainSoundPlaying = 0;   // [Sadia] 1 while rain WAV is looping
+static bool springMode = true;   // true = spring (petals), false = normal
+static bool rainMode = false;    // true = rainy season, false = dry
+static int rainSoundPlaying = 0; // [Sadia] 1 while rain WAV is looping
 
 // ── Rain particles (Sadia) ────────────────────────────────────────
 static float rainX[MAX_RAIN];
 static float rainY[MAX_RAIN];
 static float rainSpeed[MAX_RAIN];
-static float rainSpeedMult = 1.0f;  // [Sadia] adjustable via 'p' / 'o'
+static float rainSpeedMult = 1.0f; // [Sadia] adjustable via 'p' / 'o'
 
 // ── Wind animation state (used only by tree sway / petal physics) ──
 static float windAngle = 0.0f;   // current sway angle (degrees)
@@ -154,8 +185,8 @@ static float dayAngle = 0.28f;  // 0 → PI : sun travels left → right
 static float nightAngle = 0.0f; // 0 → PI : moon arc
 static int isDay = 1;           // 1 = day, 0 = night
 static float breezeSpeed = 0.016f;
-static float cloudScale = 1.0f;   // 1.0 = default size, +/- keys adjust this
-static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
+static float cloudScale = 1.0f;     // 1.0 = default size, +/- keys adjust this
+static float cloudSpeedMult = 1.0f; // 1.0 = default, adjustable at runtime
 
 // ── Thunderstorm state (Sadia) ────────────────────────────────────
 // Triggered by pressing 't'.  Each 't' press steps intensity:
@@ -165,177 +196,234 @@ static float cloudSpeedMult = 1.0f;  // 1.0 = default, adjustable at runtime
 //   4th press: turn off
 // The bolt is drawn with glScalef so it appears to "grow" from the
 // sky each time it strikes — another use of dynamic scaling.
-static bool  thunderMode      = false;
-static int   thunderIntensity = 1;
-static float thunderTimer     = 0.0f;
-static float thunderFlashAlpha= 0.0f;
-static bool  lightningVisible = false;
-static float lightningTimer   = 0.0f;
+static bool thunderMode = false;
+static int thunderIntensity = 1;
+static float thunderTimer = 0.0f;
+static float thunderFlashAlpha = 0.0f;
+static bool lightningVisible = false;
+static float lightningTimer = 0.0f;
 
 // Thunder scaling animation (the "grow then shrink" effect on each strike)
-static float thunderScale     = 0.0f;
-static float thunderScaleDir  = 1.0f;
-static float thunderScaleMax  = 0.0f;
-static bool  thunderScaling   = false;
+static float thunderScale = 0.0f;
+static float thunderScaleDir = 1.0f;
+static float thunderScaleMax = 0.0f;
+static bool thunderScaling = false;
 
 #define MAX_LIGHTNING_SEGS 16
 static float lgSegX[MAX_LIGHTNING_SEGS + 1];
 static float lgSegY[MAX_LIGHTNING_SEGS + 1];
-static int   lgSegCount = 0;
+static int lgSegCount = 0;
 
 // Branch bolts (only at intensity 2 and 3)
 #define MAX_BRANCHES 3
 static float branchX[MAX_BRANCHES][9];
 static float branchY[MAX_BRANCHES][9];
-static int   branchCount = 0;
+static int branchCount = 0;
 
 // ── [FIREWORKS SYSTEM] ─────────────────────────────────────────────
 // Firework tunables
-#define FW_MAX_ROCKETS    24      // max simultaneous rockets in flight
-#define FW_MAX_PARTICLES  4200    // total particle pool (all bursts combined)
-#define FW_SOUND_DURATION 5.0f   // seconds — matches fireWorkSoundV3.m4a length
+#define FW_MAX_ROCKETS 24      // max simultaneous rockets in flight
+#define FW_MAX_PARTICLES 4200  // total particle pool (all bursts combined)
+#define FW_SOUND_DURATION 5.0f // seconds — matches fireWorkSoundV3.m4a length
 
 // Rocket types
-enum FWRocketType {
-    FW_CHRYSANTHEMUM = 0,  // dense full sphere — classic gold
-    FW_WILLOW,             // drooping long trails
-    FW_RING,               // perfect ring / double ring
-    FW_COMET,              // tight fast burst with long comet tail
-    FW_CROSSETTE,          // splits into 4 sub-shells mid-air
-    FW_STROBE,             // flashing white sparkle cloud
-    FW_PEONY,              // large sphere, petals fade outward
+enum FWRocketType
+{
+    FW_CHRYSANTHEMUM = 0, // dense full sphere — classic gold
+    FW_WILLOW,            // drooping long trails
+    FW_RING,              // perfect ring / double ring
+    FW_COMET,             // tight fast burst with long comet tail
+    FW_CROSSETTE,         // splits into 4 sub-shells mid-air
+    FW_STROBE,            // flashing white sparkle cloud
+    FW_PEONY,             // large sphere, petals fade outward
     FW_TYPE_COUNT
 };
 
 // Launch sites (world coordinates)
-struct FWLaunchSite {
+struct FWLaunchSite
+{
     float x, y;
-    int   preferType;   // -1 = random
+    int preferType; // -1 = random
 };
 
 static const FWLaunchSite FW_SITES[] = {
     // D-Building rooftop — centre and flanks
-    {  0.22f,  0.530f, FW_CHRYSANTHEMUM },
-    { -0.02f,  0.535f, FW_WILLOW        },
-    {  0.48f,  0.528f, FW_PEONY         },
+    {0.22f, 0.530f, FW_CHRYSANTHEMUM},
+    {-0.02f, 0.535f, FW_WILLOW},
+    {0.48f, 0.528f, FW_PEONY},
     // C-Building antenna tip
-    { -0.715f, 0.580f, FW_RING          },
+    {-0.715f, 0.580f, FW_RING},
     // Annex-9 roof
-    {  0.16f,  0.100f, FW_COMET         },
+    {0.16f, 0.100f, FW_COMET},
     // Left background buildings (tall ones)
-    { -0.94f,  0.490f, FW_CROSSETTE     },
-    { -0.68f,  0.375f, FW_STROBE        },
-    { -0.82f,  0.440f, FW_CHRYSANTHEMUM },
+    {-0.94f, 0.490f, FW_CROSSETTE},
+    {-0.68f, 0.375f, FW_STROBE},
+    {-0.82f, 0.440f, FW_CHRYSANTHEMUM},
     // Right background area
-    {  0.88f,  0.280f, FW_WILLOW        },
+    {0.88f, 0.280f, FW_WILLOW},
     // Top-row lamp posts as footpath launchers
-    { -0.38f, -0.640f, FW_COMET         },
-    {  0.34f, -0.640f, FW_RING          },
-    {  0.84f, -0.640f, FW_PEONY         },
+    {-0.38f, -0.640f, FW_COMET},
+    {0.34f, -0.640f, FW_RING},
+    {0.84f, -0.640f, FW_PEONY},
     // Bottom-row lamp posts
-    { -0.67f, -0.920f, FW_STROBE        },
-    {  0.59f, -0.920f, FW_CROSSETTE     },
+    {-0.67f, -0.920f, FW_STROBE},
+    {0.59f, -0.920f, FW_CROSSETTE},
 };
 static const int FW_SITE_COUNT = (int)(sizeof(FW_SITES) / sizeof(FW_SITES[0]));
 
 // Per-particle state
-struct FWParticle {
-    float x,  y;        // world position
-    float vx, vy;       // velocity
-    float ax, ay;       // acceleration (gravity + drag)
-    float life;         // remaining life 0..1
-    float decay;        // life lost per tick
-    float size;         // render radius
+struct FWParticle
+{
+    float x, y;   // world position
+    float vx, vy; // velocity
+    float ax, ay; // acceleration (gravity + drag)
+    float life;   // remaining life 0..1
+    float decay;  // life lost per tick
+    float size;   // render radius
     unsigned char r, g, b;
     unsigned char trailR, trailG, trailB;
-    bool  active;
-    bool  isTrail;      // true = launch smoke trail
-    bool  isSpark;      // tiny secondary sparkle
-    int   strobePhase;  // for FW_STROBE flicker
+    bool active;
+    bool isTrail;    // true = launch smoke trail
+    bool isSpark;    // tiny secondary sparkle
+    int strobePhase; // for FW_STROBE flicker
 };
 
 // Per-rocket state
-struct FWRocket {
-    float x,  y;        // current position
-    float tx, ty;       // target burst position
-    float vx, vy;       // ascent velocity
-    float life;         // 0..1  (1=just launched, 0=burst)
-    bool  active;
-    bool  hasBurst;
+struct FWRocket
+{
+    float x, y;   // current position
+    float tx, ty; // target burst position
+    float vx, vy; // ascent velocity
+    float life;   // 0..1  (1=just launched, 0=burst)
+    bool active;
+    bool hasBurst;
     FWRocketType type;
     // colour of this rocket's burst
     unsigned char r, g, b;
-    unsigned char r2, g2, b2;   // secondary colour (ring / double)
-    int  siteIdx;               // which launch site
-    float trailTimer;           // smoke-puff spawn timer
+    unsigned char r2, g2, b2; // secondary colour (ring / double)
+    int siteIdx;              // which launch site
+    float trailTimer;         // smoke-puff spawn timer
 };
 
 // Global firework state
-static bool  fwActive        = false;  // master on/off
-static float fwTimer         = 0.0f;   // seconds elapsed since 'f' pressed
-static float fwLaunchTimer   = 0.0f;   // countdown to next rocket launch
-static int   fwLaunchIdx     = 0;      // next launch site index
-static int   fwSoundPlaying  = 0;
+static bool fwActive = false;      // master on/off
+static float fwTimer = 0.0f;       // seconds elapsed since 'f' pressed
+static float fwLaunchTimer = 0.0f; // countdown to next rocket launch
+static int fwLaunchIdx = 0;        // next launch site index
+static int fwSoundPlaying = 0;
 
-static FWRocket   fwRockets  [FW_MAX_ROCKETS];
+static FWRocket fwRockets[FW_MAX_ROCKETS];
 static FWParticle fwParticles[FW_MAX_PARTICLES];
 
 // Screen flash for fireworks
-static float fwFlashAlpha = 0.0f;   // 0..1, decays each frame
+static float fwFlashAlpha = 0.0f; // 0..1, decays each frame
 
 // Tiny LCG for firework randomness (separate from petalSeed)
 static unsigned int fwSeed = 0xDEADBEEFu;
-static float fwRand() {
+static float fwRand()
+{
     fwSeed = fwSeed * 1664525u + 1013904223u;
     return (float)(fwSeed & 0x7FFFu) / 32767.0f;
 }
-static float fwRandSym() { return fwRand() * 2.0f - 1.0f; }  // -1..+1
+static float fwRandSym() { return fwRand() * 2.0f - 1.0f; } // -1..+1
 
 // Colour palette (7 themed palettes, one per rocket type)
 static void fwPickColour(FWRocketType type,
-                          unsigned char &r,  unsigned char &g,  unsigned char &b,
-                          unsigned char &r2, unsigned char &g2, unsigned char &b2)
+                         unsigned char &r, unsigned char &g, unsigned char &b,
+                         unsigned char &r2, unsigned char &g2, unsigned char &b2)
 {
     // Each type gets a distinct gorgeous palette
-    switch (type) {
+    switch (type)
+    {
     case FW_CHRYSANTHEMUM:
         // Gold / amber cascade
-        r=255; g=200; b= 40;   r2=255; g2=140; b2= 10;  break;
+        r = 255;
+        g = 200;
+        b = 40;
+        r2 = 255;
+        g2 = 140;
+        b2 = 10;
+        break;
     case FW_WILLOW:
         // Emerald green with silver tips
-        r= 80; g=240; b=100;   r2=220; g2=255; b2=220;  break;
+        r = 80;
+        g = 240;
+        b = 100;
+        r2 = 220;
+        g2 = 255;
+        b2 = 220;
+        break;
     case FW_RING:
         // Cyan / electric blue double ring
-        r= 30; g=220; b=255;   r2=160; g2= 60; b2=255;  break;
+        r = 30;
+        g = 220;
+        b = 255;
+        r2 = 160;
+        g2 = 60;
+        b2 = 255;
+        break;
     case FW_COMET:
         // Crimson / hot white core
-        r=255; g= 60; b= 40;   r2=255; g2=240; b2=200;  break;
+        r = 255;
+        g = 60;
+        b = 40;
+        r2 = 255;
+        g2 = 240;
+        b2 = 200;
+        break;
     case FW_CROSSETTE:
         // Violet / magenta split
-        r=220; g= 50; b=220;   r2=255; g2=130; b2=200;  break;
+        r = 220;
+        g = 50;
+        b = 220;
+        r2 = 255;
+        g2 = 130;
+        b2 = 200;
+        break;
     case FW_STROBE:
         // Pure white strobe flash
-        r=255; g=255; b=255;   r2=200; g2=220; b2=255;  break;
+        r = 255;
+        g = 255;
+        b = 255;
+        r2 = 200;
+        g2 = 220;
+        b2 = 255;
+        break;
     case FW_PEONY:
         // Rose / coral large sphere
-        r=255; g= 80; b=120;   r2=255; g2=180; b2= 80;  break;
+        r = 255;
+        g = 80;
+        b = 120;
+        r2 = 255;
+        g2 = 180;
+        b2 = 80;
+        break;
     default:
-        r=255; g=255; b=100;   r2=255; g2=200; b2= 60;  break;
+        r = 255;
+        g = 255;
+        b = 100;
+        r2 = 255;
+        g2 = 200;
+        b2 = 60;
+        break;
     }
     // Randomise brightness a bit
     float br = 0.75f + fwRand() * 0.25f;
-    r  = (unsigned char)(r  * br);
-    g  = (unsigned char)(g  * br);
-    b  = (unsigned char)(b  * br);
+    r = (unsigned char)(r * br);
+    g = (unsigned char)(g * br);
+    b = (unsigned char)(b * br);
 }
 
 // Spawn helpers
-static FWParticle* fwAllocParticle() {
+static FWParticle *fwAllocParticle()
+{
     // Find first inactive slot — cycle through pool
     static int cursor = 0;
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+    {
         int idx = (cursor + i) % FW_MAX_PARTICLES;
-        if (!fwParticles[idx].active) {
+        if (!fwParticles[idx].active)
+        {
             cursor = (idx + 1) % FW_MAX_PARTICLES;
             return &fwParticles[idx];
         }
@@ -343,79 +431,108 @@ static FWParticle* fwAllocParticle() {
     // Pool full — evict the oldest (lowest life)
     int oldest = 0;
     float minLife = fwParticles[0].life;
-    for (int i = 1; i < FW_MAX_PARTICLES; i++) {
-        if (fwParticles[i].life < minLife) { minLife = fwParticles[i].life; oldest = i; }
+    for (int i = 1; i < FW_MAX_PARTICLES; i++)
+    {
+        if (fwParticles[i].life < minLife)
+        {
+            minLife = fwParticles[i].life;
+            oldest = i;
+        }
     }
     return &fwParticles[oldest];
 }
 
 // Spawn one launch-trail smoke puff
 static void fwSpawnTrailPuff(float x, float y,
-                              unsigned char r, unsigned char g, unsigned char b)
+                             unsigned char r, unsigned char g, unsigned char b)
 {
     FWParticle *p = fwAllocParticle();
     p->x = x + fwRandSym() * 0.008f;
     p->y = y + fwRandSym() * 0.004f;
     p->vx = fwRandSym() * 0.0012f;
-    p->vy = -0.0018f - fwRand() * 0.0025f;  // drifts slightly downward (smoke)
+    p->vy = -0.0018f - fwRand() * 0.0025f; // drifts slightly downward (smoke)
     p->ax = 0.0f;
-    p->ay = 0.0002f;  // very gentle upward correction (smoke rises)
-    p->life  = 0.55f + fwRand() * 0.30f;
+    p->ay = 0.0002f; // very gentle upward correction (smoke rises)
+    p->life = 0.55f + fwRand() * 0.30f;
     p->decay = 0.022f + fwRand() * 0.018f;
-    p->size  = 0.006f + fwRand() * 0.009f;
-    p->r = r; p->g = g; p->b = b;
+    p->size = 0.006f + fwRand() * 0.009f;
+    p->r = r;
+    p->g = g;
+    p->b = b;
     p->isTrail = true;
-    p->isSpark  = false;
-    p->active   = true;
+    p->isSpark = false;
+    p->active = true;
     p->strobePhase = 0;
 }
 
 // Trigger screen flash
-static void fwTriggerFlash() {
+static void fwTriggerFlash()
+{
     fwFlashAlpha = fminf(1.0f, fwFlashAlpha + 0.35f);
 }
 
 // Burst — emits N particles for a given firework type
 static void fwBurst(float cx, float cy, FWRocketType type,
-                     unsigned char r,  unsigned char g,  unsigned char b,
-                     unsigned char r2, unsigned char g2, unsigned char b2)
+                    unsigned char r, unsigned char g, unsigned char b,
+                    unsigned char r2, unsigned char g2, unsigned char b2)
 {
-    fwTriggerFlash();  // Flash when rocket bursts!
+    fwTriggerFlash(); // Flash when rocket bursts!
 
-    float asp = 1400.0f / 800.0f;  // fixed aspect for radius correction
+    float asp = 1400.0f / 800.0f; // fixed aspect for radius correction
 
     // Base particle count per type
     int count = 0;
-    switch(type) {
-        case FW_CHRYSANTHEMUM: count = 240; break;
-        case FW_WILLOW:        count = 180; break;
-        case FW_RING:          count = 120; break;
-        case FW_COMET:         count = 140; break;
-        case FW_CROSSETTE:     count = 160; break;
-        case FW_STROBE:        count = 200; break;
-        case FW_PEONY:         count = 260; break;
-        default:               count = 180; break;
+    switch (type)
+    {
+    case FW_CHRYSANTHEMUM:
+        count = 240;
+        break;
+    case FW_WILLOW:
+        count = 180;
+        break;
+    case FW_RING:
+        count = 120;
+        break;
+    case FW_COMET:
+        count = 140;
+        break;
+    case FW_CROSSETTE:
+        count = 160;
+        break;
+    case FW_STROBE:
+        count = 200;
+        break;
+    case FW_PEONY:
+        count = 260;
+        break;
+    default:
+        count = 180;
+        break;
     }
 
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++)
+    {
         FWParticle *p = fwAllocParticle();
         float angle, speed, life, decay, sz;
         bool isSpark = false;
 
-        switch(type) {
+        switch (type)
+        {
         case FW_CHRYSANTHEMUM:
             angle = fwRand() * 2.0f * PI;
             speed = 0.0080f + fwRand() * 0.0100f;
             p->vx = cosf(angle) * speed / asp;
             p->vy = sinf(angle) * speed;
             p->ax = 0.0f;
-            p->ay = -0.00025f;  // Normal gravity
-            life  = 0.55f + fwRand() * 0.20f;   // Balanced life
+            p->ay = -0.00025f;                  // Normal gravity
+            life = 0.55f + fwRand() * 0.20f;    // Balanced life
             decay = 0.035f + fwRand() * 0.020f; // Moderate decay
-            sz    = 0.004f + fwRand() * 0.004f;
-            p->r  = r;  p->g  = g;  p->b  = b;
-            p->trailR = (unsigned char)(r*0.6f);
-            p->trailG = (unsigned char)(g*0.4f);
+            sz = 0.004f + fwRand() * 0.004f;
+            p->r = r;
+            p->g = g;
+            p->b = b;
+            p->trailR = (unsigned char)(r * 0.6f);
+            p->trailG = (unsigned char)(g * 0.4f);
             p->trailB = 10;
             isSpark = (fwRand() < 0.15f);
             break;
@@ -426,43 +543,64 @@ static void fwBurst(float cx, float cy, FWRocketType type,
             p->vx = cosf(angle) * speed / asp;
             p->vy = sinf(angle) * speed;
             p->ax = fwRandSym() * 0.00005f;
-            p->ay = -0.00060f;  // Slightly higher gravity for willow effect
-            life  = 0.65f + fwRand() * 0.15f;   // Balanced life
+            p->ay = -0.00060f;                  // Slightly higher gravity for willow effect
+            life = 0.65f + fwRand() * 0.15f;    // Balanced life
             decay = 0.028f + fwRand() * 0.018f; // Moderate decay
-            sz    = 0.003f + fwRand() * 0.003f;
-            p->r  = r;  p->g  = g;  p->b  = b;
-            p->trailR = 40; p->trailG = 140; p->trailB = 40;
+            sz = 0.003f + fwRand() * 0.003f;
+            p->r = r;
+            p->g = g;
+            p->b = b;
+            p->trailR = 40;
+            p->trailG = 140;
+            p->trailB = 40;
             isSpark = (fwRand() < 0.10f);
             break;
 
-        case FW_RING: {
+        case FW_RING:
+        {
             bool isOuter = (i < count / 2);
-            float ringR  = isOuter ? 1.0f : 0.55f;
-            angle = (isOuter ? (float)i / (count/2) : fwRand()) * 2.0f * PI;
+            float ringR = isOuter ? 1.0f : 0.55f;
+            angle = (isOuter ? (float)i / (count / 2) : fwRand()) * 2.0f * PI;
             speed = 0.0120f * ringR;
             p->vx = cosf(angle) * speed / asp;
             p->vy = sinf(angle) * speed;
             p->ax = 0.0f;
-            p->ay = -0.00015f;  // Light gravity for ring shape
-            life  = 0.50f + fwRand() * 0.20f;   // Balanced life
+            p->ay = -0.00015f;                  // Light gravity for ring shape
+            life = 0.50f + fwRand() * 0.20f;    // Balanced life
             decay = 0.032f + fwRand() * 0.022f; // Moderate decay
-            sz    = 0.005f + fwRand() * 0.003f;
-            if (isOuter) { p->r=r; p->g=g; p->b=b; }
-            else          { p->r=r2; p->g=g2; p->b=b2; }
-            p->trailR = 20; p->trailG = 80; p->trailB = 160;
+            sz = 0.005f + fwRand() * 0.003f;
+            if (isOuter)
+            {
+                p->r = r;
+                p->g = g;
+                p->b = b;
+            }
+            else
+            {
+                p->r = r2;
+                p->g = g2;
+                p->b = b2;
+            }
+            p->trailR = 20;
+            p->trailG = 80;
+            p->trailB = 160;
             isSpark = false;
             break;
         }
 
-        case FW_COMET: {
+        case FW_COMET:
+        {
             bool isHead = (fwRand() < 0.70f);
-            if (isHead) {
+            if (isHead)
+            {
                 angle = fwRandSym() * 0.55f;
                 speed = 0.0150f + fwRand() * 0.0080f;
                 float dir = PI * 0.5f + fwRandSym() * 0.30f;
                 p->vx = cosf(dir + angle) * speed / asp;
                 p->vy = sinf(dir + angle) * speed;
-            } else {
+            }
+            else
+            {
                 angle = fwRand() * 2.0f * PI;
                 speed = 0.0035f + fwRand() * 0.0060f;
                 p->vx = cosf(angle) * speed / asp;
@@ -470,35 +608,50 @@ static void fwBurst(float cx, float cy, FWRocketType type,
             }
             p->ax = 0.0f;
             p->ay = -0.00035f;
-            life  = 0.45f + fwRand() * 0.25f;   // Balanced life
+            life = 0.45f + fwRand() * 0.25f;    // Balanced life
             decay = 0.040f + fwRand() * 0.025f; // Moderate decay
-            sz    = isHead ? (0.005f + fwRand() * 0.006f)
-                           : (0.003f + fwRand() * 0.003f);
+            sz = isHead ? (0.005f + fwRand() * 0.006f)
+                        : (0.003f + fwRand() * 0.003f);
             p->r = isHead ? r2 : r;
             p->g = isHead ? g2 : g;
             p->b = isHead ? b2 : b;
-            p->trailR = 200; p->trailG = 50; p->trailB = 20;
+            p->trailR = 200;
+            p->trailG = 50;
+            p->trailB = 20;
             isSpark = (fwRand() < 0.20f);
             break;
         }
 
-        case FW_CROSSETTE: {
+        case FW_CROSSETTE:
+        {
             int group = (i * 4) / count;
             float groupAngle = group * PI * 0.5f + PI * 0.25f;
             float spread = fwRandSym() * 0.50f;
-            float dist   = 0.0055f + fwRand() * 0.0095f;
+            float dist = 0.0055f + fwRand() * 0.0095f;
             angle = groupAngle + spread;
             speed = dist;
             p->vx = cosf(angle) * speed / asp;
             p->vy = sinf(angle) * speed;
             p->ax = 0.0f;
             p->ay = -0.00028f;
-            life  = 0.52f + fwRand() * 0.22f;   // Balanced life
+            life = 0.52f + fwRand() * 0.22f;    // Balanced life
             decay = 0.035f + fwRand() * 0.020f; // Moderate decay
-            sz    = 0.004f + fwRand() * 0.003f;
-            if (group % 2 == 0) { p->r=r;  p->g=g;  p->b=b;  }
-            else                 { p->r=r2; p->g=g2; p->b=b2; }
-            p->trailR = 180; p->trailG = 40; p->trailB = 200;
+            sz = 0.004f + fwRand() * 0.003f;
+            if (group % 2 == 0)
+            {
+                p->r = r;
+                p->g = g;
+                p->b = b;
+            }
+            else
+            {
+                p->r = r2;
+                p->g = g2;
+                p->b = b2;
+            }
+            p->trailR = 180;
+            p->trailG = 40;
+            p->trailB = 200;
             isSpark = (fwRand() < 0.12f);
             break;
         }
@@ -510,11 +663,15 @@ static void fwBurst(float cx, float cy, FWRocketType type,
             p->vy = sinf(angle) * speed;
             p->ax = 0.0f;
             p->ay = -0.00020f;
-            life  = 0.48f + fwRand() * 0.28f;   // Balanced life
+            life = 0.48f + fwRand() * 0.28f;    // Balanced life
             decay = 0.038f + fwRand() * 0.022f; // Moderate decay
-            sz    = 0.003f + fwRand() * 0.005f;
-            p->r = 255; p->g = 255; p->b = 255;
-            p->trailR = 180; p->trailG = 200; p->trailB = 255;
+            sz = 0.003f + fwRand() * 0.005f;
+            p->r = 255;
+            p->g = 255;
+            p->b = 255;
+            p->trailR = 180;
+            p->trailG = 200;
+            p->trailB = 255;
             p->strobePhase = (int)(fwRand() * 8.0f);
             isSpark = false;
             break;
@@ -526,9 +683,9 @@ static void fwBurst(float cx, float cy, FWRocketType type,
             p->vy = sinf(angle) * speed;
             p->ax = fwRandSym() * 0.00003f;
             p->ay = -0.00022f;
-            life  = 0.58f + fwRand() * 0.22f;   // Balanced life
+            life = 0.58f + fwRand() * 0.22f;    // Balanced life
             decay = 0.030f + fwRand() * 0.018f; // Moderate decay
-            sz    = 0.004f + fwRand() * 0.005f;
+            sz = 0.004f + fwRand() * 0.005f;
             {
                 float t = speed / 0.019f;
                 p->r = (unsigned char)(r2 + (r - r2) * t);
@@ -546,37 +703,53 @@ static void fwBurst(float cx, float cy, FWRocketType type,
             speed = 0.008f;
             p->vx = cosf(angle) * speed / asp;
             p->vy = sinf(angle) * speed;
-            p->ax = 0.0f; p->ay = -0.0003f;
-            life = 0.55f; decay = 0.035f; sz = 0.004f;
-            p->r=r; p->g=g; p->b=b;
-            p->trailR=r; p->trailG=g; p->trailB=b;
+            p->ax = 0.0f;
+            p->ay = -0.0003f;
+            life = 0.55f;
+            decay = 0.035f;
+            sz = 0.004f;
+            p->r = r;
+            p->g = g;
+            p->b = b;
+            p->trailR = r;
+            p->trailG = g;
+            p->trailB = b;
             break;
         }
 
-        p->x     = cx + fwRandSym() * 0.004f;
-        p->y     = cy + fwRandSym() * 0.004f;
-        p->life  = life;
+        p->x = cx + fwRandSym() * 0.004f;
+        p->y = cy + fwRandSym() * 0.004f;
+        p->life = life;
         p->decay = decay;
-        p->size  = sz;
+        p->size = sz;
         p->isTrail = false;
-        p->isSpark  = isSpark;
-        p->active   = true;
+        p->isSpark = isSpark;
+        p->active = true;
     }
 
     // Bright white central flash particles (30 tight sparks)
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < 30; i++)
+    {
         FWParticle *p = fwAllocParticle();
         float a = fwRand() * 2.0f * PI;
         float s = 0.0020f + fwRand() * 0.0050f;
-        p->x = cx; p->y = cy;
+        p->x = cx;
+        p->y = cy;
         p->vx = cosf(a) * s / asp;
         p->vy = sinf(a) * s;
-        p->ax = 0.0f; p->ay = -0.00015f;
-        p->life = 0.35f; p->decay = 0.045f;  // Balanced life
+        p->ax = 0.0f;
+        p->ay = -0.00015f;
+        p->life = 0.35f;
+        p->decay = 0.045f; // Balanced life
         p->size = 0.003f + fwRand() * 0.004f;
-        p->r=255; p->g=255; p->b=255;
-        p->trailR=255; p->trailG=255; p->trailB=200;
-        p->isTrail = false; p->isSpark = false;
+        p->r = 255;
+        p->g = 255;
+        p->b = 255;
+        p->trailR = 255;
+        p->trailG = 255;
+        p->trailB = 200;
+        p->isTrail = false;
+        p->isSpark = false;
         p->active = true;
         p->strobePhase = 0;
     }
@@ -587,10 +760,16 @@ static void fwLaunchRocket(int siteIdx)
 {
     // Find free rocket slot
     FWRocket *rk = nullptr;
-    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
-        if (!fwRockets[i].active) { rk = &fwRockets[i]; break; }
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+    {
+        if (!fwRockets[i].active)
+        {
+            rk = &fwRockets[i];
+            break;
+        }
     }
-    if (!rk) return;
+    if (!rk)
+        return;
 
     const FWLaunchSite &site = FW_SITES[siteIdx % FW_SITE_COUNT];
 
@@ -603,7 +782,7 @@ static void fwLaunchRocket(int siteIdx)
     // Calculate velocity to reach target
     float dy = rk->ty - rk->y;
     float dx = rk->tx - rk->x;
-    float travelTicks = 28.0f + fwRand() * 18.0f;  // ticks to reach burst
+    float travelTicks = 28.0f + fwRand() * 18.0f; // ticks to reach burst
     rk->vx = dx / travelTicks;
     rk->vy = dy / travelTicks;
 
@@ -643,7 +822,7 @@ static void playRainSound()
 
     if (mciSendString(openCmd, NULL, 0, NULL) == 0)
     {
-        mciSendString("play rainsnd repeat", NULL, 0, NULL);  // loops forever
+        mciSendString("play rainsnd repeat", NULL, 0, NULL); // loops forever
         rainSoundPlaying = 1;
         return;
     }
@@ -658,7 +837,7 @@ static void playRainSound()
     // the flag file in stopRainSound() lets the loop exit cleanly.
     // (Plain `pkill afplay` on its own would NOT stop the loop —
     //  the shell would just relaunch afplay on the next iteration.)
-    system("pkill -f 'afplay rain.wav' 2>/dev/null");   // belt-and-braces cleanup
+    system("pkill -f 'afplay rain.wav' 2>/dev/null"); // belt-and-braces cleanup
     system("touch /tmp/aiub_rain_active 2>/dev/null");
     if (system("(while [ -f /tmp/aiub_rain_active ]; do afplay rain.wav 2>/dev/null; done) >/dev/null 2>&1 &") == 0)
     {
@@ -697,12 +876,12 @@ static void stopRainSound()
 // ================================================================
 static void resetThunderstorm()
 {
-    thunderMode       = false;
-    lightningVisible  = false;
+    thunderMode = false;
+    lightningVisible = false;
     thunderFlashAlpha = 0.0f;
-    thunderScaling    = false;
-    thunderScale      = 0.0f;
-    thunderIntensity  = 1;
+    thunderScaling = false;
+    thunderScale = 0.0f;
+    thunderIntensity = 1;
 }
 
 // Play sound for fireworks
@@ -718,27 +897,32 @@ static void fwPlaySound()
 
     char openCmd[256];
     sprintf(openCmd, "open \"%s\" type waveaudio alias fwsnd", fullPath);
-    if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
+    if (mciSendString(openCmd, NULL, 0, NULL) == 0)
+    {
         mciSendString("play fwsnd", NULL, 0, NULL);
         return;
     }
 
     sprintf(openCmd, "open \"fireWorkSoundV3.wav\" type waveaudio alias fwsnd");
-    if (mciSendString(openCmd, NULL, 0, NULL) == 0) {
+    if (mciSendString(openCmd, NULL, 0, NULL) == 0)
+    {
         mciSendString("play fwsnd", NULL, 0, NULL);
         return;
     }
 
-    if (PlaySound("fireWorkSoundV3.wav", NULL, SND_FILENAME | SND_ASYNC)) return;
+    if (PlaySound("fireWorkSoundV3.wav", NULL, SND_FILENAME | SND_ASYNC))
+        return;
     PlaySound("C:\\Windows\\Media\\tada.wav", NULL, SND_FILENAME | SND_ASYNC);
 
 #elif __APPLE__
     // ---- macOS: use afplay ----
     // Method 1: Try relative path (same folder as the executable)
-    if (system("afplay fireWorkSoundV3.wav &") == 0) return;
+    if (system("afplay fireWorkSoundV3.wav &") == 0)
+        return;
 
     // Method 2: Try one level up (common when running from build folder)
-    if (system("afplay ../fireWorkSoundV3.wav &") == 0) return;
+    if (system("afplay ../fireWorkSoundV3.wav &") == 0)
+        return;
 
     // Method 3: Fallback — macOS system sound
     system("afplay /System/Library/Sounds/Glass.aiff &");
@@ -762,25 +946,29 @@ static void fwStopSound()
 // Initialize fireworks system
 static void initFireworks()
 {
-    for (int i = 0; i < FW_MAX_ROCKETS;   i++) fwRockets[i].active   = false;
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) fwParticles[i].active = false;
-    fwActive      = false;
-    fwTimer       = 0.0f;
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+        fwRockets[i].active = false;
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+        fwParticles[i].active = false;
+    fwActive = false;
+    fwTimer = 0.0f;
     fwLaunchTimer = 0.0f;
-    fwLaunchIdx   = 0;
-    fwFlashAlpha  = 0.0f;
+    fwLaunchIdx = 0;
+    fwFlashAlpha = 0.0f;
 }
 // Force cleanup ALL fireworks particles and rockets
 static void fwForceCleanup()
 {
     // Clear all particles
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+    {
         fwParticles[i].active = false;
         fwParticles[i].life = 0.0f;
     }
 
     // Clear all rockets
-    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+    {
         fwRockets[i].active = false;
         fwRockets[i].hasBurst = false;
     }
@@ -798,77 +986,89 @@ static void fwForceCleanup()
 // Update fireworks - call every tick
 static void updateFireworks(float dt)
 {
-    if (!fwActive) return;
+    if (!fwActive)
+        return;
 
     fwTimer += dt;
 
     // Wave schedule (seconds after 'f' press → sites to launch):
     static const float FW_WAVE_TIMES[] = {
-        0.00f, 0.08f, 0.18f, 0.30f, 0.42f,  // rapid opening salvo
-        0.55f, 0.65f, 0.75f,                 // mid burst
-        0.88f, 0.95f, 1.05f,                 // climax
-        1.20f, 1.45f, 1.70f,                 // finale dying sparkle
-        2.00f, 2.30f, 2.60f,                 // EXTRA: more fireworks
-        3.00f                                // EXTRA: final burst
+        0.00f, 0.08f, 0.18f, 0.30f, 0.42f, // rapid opening salvo
+        0.55f, 0.65f, 0.75f,               // mid burst
+        0.88f, 0.95f, 1.05f,               // climax
+        1.20f, 1.45f, 1.70f,               // finale dying sparkle
+        2.00f, 2.30f, 2.60f,               // EXTRA: more fireworks
+        3.00f                              // EXTRA: final burst
     };
     static const int FW_WAVE_SITES[] = {
         2, 0, 3, 6, 1,
         4, 7, 5,
         8, 1, 0,
         9, 10, 3,
-        2, 5, 8,      // EXTRA launches
-        1              // EXTRA launch
+        2, 5, 8, // EXTRA launches
+        1        // EXTRA launch
     };
-    static int fwWaveDone[14] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    static int fwWaveDone[14] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     static bool fwWaveReset = false;
 
     // Reset when newly activated
-    if (fwTimer < dt * 2.0f) {
-        for (int i = 0; i < 14; i++) fwWaveDone[i] = 0;
+    if (fwTimer < dt * 2.0f)
+    {
+        for (int i = 0; i < 14; i++)
+            fwWaveDone[i] = 0;
         fwWaveReset = true;
     }
 
-    for (int w = 0; w < 14; w++) {
-        if (!fwWaveDone[w] && fwTimer >= FW_WAVE_TIMES[w]) {
+    for (int w = 0; w < 14; w++)
+    {
+        if (!fwWaveDone[w] && fwTimer >= FW_WAVE_TIMES[w])
+        {
             int siteIdx = FW_WAVE_SITES[w] % FW_SITE_COUNT;
             fwLaunchRocket(siteIdx);
             // Launch a second rocket from a nearby random site for density
             if (fwRand() > 0.40f)
-                fwLaunchRocket((siteIdx + 2 + (int)(fwRand()*3)) % FW_SITE_COUNT);
+                fwLaunchRocket((siteIdx + 2 + (int)(fwRand() * 3)) % FW_SITE_COUNT);
             fwWaveDone[w] = 1;
         }
     }
 
     // Stop fireworks after sound duration + a little tail
     // Stop fireworks after sound duration + a little tail
-    if (fwTimer > FW_SOUND_DURATION + 1.5f) {
+    if (fwTimer > FW_SOUND_DURATION + 1.5f)
+    {
         // FORCE CLEANUP ALL PARTICLES AND ROCKETS
-        for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+        for (int i = 0; i < FW_MAX_PARTICLES; i++)
+        {
             fwParticles[i].active = false;
             fwParticles[i].life = 0.0f;
         }
-        for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+        for (int i = 0; i < FW_MAX_ROCKETS; i++)
+        {
             fwRockets[i].active = false;
             fwRockets[i].hasBurst = false;
         }
 
         fwActive = false;
-        fwTimer  = 0.0f;
+        fwTimer = 0.0f;
         fwFlashAlpha = 0.0f;
 
-        for (int w = 0; w < 14; w++) fwWaveDone[w] = 0;
+        for (int w = 0; w < 14; w++)
+            fwWaveDone[w] = 0;
     }
 
     float asp = 1400.0f / 800.0f;
 
     // Update rockets
-    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+    {
         FWRocket &rk = fwRockets[i];
-        if (!rk.active) continue;
+        if (!rk.active)
+            continue;
 
         // Spawn trail smoke/sparks
         rk.trailTimer += dt;
-        if (rk.trailTimer > 0.020f) {
+        if (rk.trailTimer > 0.020f)
+        {
             rk.trailTimer = 0.0f;
             // Bright spark trail
             FWParticle *tp = fwAllocParticle();
@@ -876,13 +1076,18 @@ static void updateFireworks(float dt)
             tp->y = rk.y - 0.004f;
             tp->vx = fwRandSym() * 0.0015f;
             tp->vy = -0.003f - fwRand() * 0.003f;
-            tp->ax = 0.0f; tp->ay = 0.00005f;
-            tp->life = 0.35f;      // Balanced life for trails
-            tp->decay = 0.045f;    // Normal decay
+            tp->ax = 0.0f;
+            tp->ay = 0.00005f;
+            tp->life = 0.35f;   // Balanced life for trails
+            tp->decay = 0.045f; // Normal decay
             tp->size = 0.003f + fwRand() * 0.003f;
-            tp->r = rk.r; tp->g = rk.g; tp->b = rk.b;
-            tp->isTrail = true; tp->isSpark = false;
-            tp->active = true; tp->strobePhase = 0;
+            tp->r = rk.r;
+            tp->g = rk.g;
+            tp->b = rk.b;
+            tp->isTrail = true;
+            tp->isSpark = false;
+            tp->active = true;
+            tp->strobePhase = 0;
             // Smoke puff
             fwSpawnTrailPuff(rk.x, rk.y, 120, 115, 110);
         }
@@ -894,24 +1099,27 @@ static void updateFireworks(float dt)
         // Check if reached burst point
         float dy = rk.ty - rk.y;
         float dx = rk.tx - rk.x;
-        float distSq = dx*dx + dy*dy;
+        float distSq = dx * dx + dy * dy;
 
         // Also check if it overshot (dot product sign flip)
         bool reached = (distSq < 0.0010f) ||
                        ((rk.vx * dx + rk.vy * dy) < 0.0f);
 
-        if (reached && !rk.hasBurst) {
+        if (reached && !rk.hasBurst)
+        {
             rk.hasBurst = true;
-            rk.active   = false;
+            rk.active = false;
             fwBurst(rk.x, rk.y, rk.type,
                     rk.r, rk.g, rk.b,
                     rk.r2, rk.g2, rk.b2);
         }
 
         // Safety deactivate if rocket goes off screen
-        if (rk.y > 1.05f || rk.x < -1.2f || rk.x > 1.2f) {
+        if (rk.y > 1.05f || rk.x < -1.2f || rk.x > 1.2f)
+        {
             rk.active = false;
-            if (!rk.hasBurst) {
+            if (!rk.hasBurst)
+            {
                 rk.hasBurst = true;
                 fwBurst(rk.x, fminf(rk.y, 0.98f),
                         rk.type,
@@ -926,65 +1134,81 @@ static void updateFireworks(float dt)
     static int strobeCounter = 0;
     strobeCounter++;
 
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+    {
         FWParticle &p = fwParticles[i];
-        if (!p.active) continue;
+        if (!p.active)
+            continue;
 
         // Physics
         p.vx += p.ax;
         p.vy += p.ay;
-        p.x  += p.vx;
-        p.y  += p.vy;
+        p.x += p.vx;
+        p.y += p.vy;
         p.life -= p.decay;
 
         // Aggressive cleanup - remove particles with low life
-        if (p.life <= 0.12f) {
+        if (p.life <= 0.12f)
+        {
             p.active = false;
             continue;
         }
 
         // Extra cleanup for trail particles (they have different alpha behavior)
-        if (p.isTrail && p.life <= 0.10f) {
+        if (p.isTrail && p.life <= 0.10f)
+        {
             p.active = false;
             continue;
         }
 
         // Secondary sparkle spawning
-        if (p.isSpark && p.life < 0.35f && p.life > 0.30f) {
+        if (p.isSpark && p.life < 0.35f && p.life > 0.30f)
+        {
             p.isSpark = false;
-            for (int s = 0; s < 5; s++) {
+            for (int s = 0; s < 5; s++)
+            {
                 FWParticle *sp = fwAllocParticle();
-                sp->x = p.x; sp->y = p.y;
+                sp->x = p.x;
+                sp->y = p.y;
                 sp->vx = fwRandSym() * 0.003f;
                 sp->vy = fwRandSym() * 0.003f;
-                sp->ax = 0.0f; sp->ay = -0.00015f;
-                sp->life = 0.18f; sp->decay = 0.055f;  // Fast decay
+                sp->ax = 0.0f;
+                sp->ay = -0.00015f;
+                sp->life = 0.18f;
+                sp->decay = 0.055f; // Fast decay
                 sp->size = 0.0018f + fwRand() * 0.002f;
-                sp->r = 255; sp->g = 230; sp->b = 100;
-                sp->isTrail = false; sp->isSpark = false;
-                sp->active = true; sp->strobePhase = 0;
+                sp->r = 255;
+                sp->g = 230;
+                sp->b = 100;
+                sp->isTrail = false;
+                sp->isSpark = false;
+                sp->active = true;
+                sp->strobePhase = 0;
             }
         }
     }
     // Stop fireworks after sound duration + a little tail
-    if (fwTimer > FW_SOUND_DURATION + 1.5f) {
-        fwForceCleanup();  // ← Add this line
+    if (fwTimer > FW_SOUND_DURATION + 1.5f)
+    {
+        fwForceCleanup(); // ← Add this line
         // Remove the individual cleanup lines below
     }
-
 }
 // Draw fireworks screen flash
-static void drawFWFlash() {
-    if (fwFlashAlpha < 0.01f) return;
+static void drawFWFlash()
+{
+    if (fwFlashAlpha < 0.01f)
+        return;
     glColor4f(1.0f, 1.0f, 1.0f, fwFlashAlpha * 0.18f);
     glBegin(GL_QUADS);
     glVertex2f(-1.0f, -1.0f);
-    glVertex2f( 1.0f, -1.0f);
-    glVertex2f( 1.0f,  1.0f);
-    glVertex2f(-1.0f,  1.0f);
+    glVertex2f(1.0f, -1.0f);
+    glVertex2f(1.0f, 1.0f);
+    glVertex2f(-1.0f, 1.0f);
     glEnd();
-    fwFlashAlpha *= 0.75f;  // decay
-    if (fwFlashAlpha < 0.01f) fwFlashAlpha = 0.0f;
+    fwFlashAlpha *= 0.75f; // decay
+    if (fwFlashAlpha < 0.01f)
+        fwFlashAlpha = 0.0f;
 }
 
 // Draw fireworks
@@ -992,14 +1216,25 @@ static void drawFireworks()
 {
     // Always draw remaining particles even when !fwActive
     bool anyAlive = false;
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
-        if (fwParticles[i].active) { anyAlive = true; break; }
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+    {
+        if (fwParticles[i].active)
+        {
+            anyAlive = true;
+            break;
+        }
     }
     bool anyRocket = false;
-    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
-        if (fwRockets[i].active) { anyRocket = true; break; }
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+    {
+        if (fwRockets[i].active)
+        {
+            anyRocket = true;
+            break;
+        }
     }
-    if (!fwActive && !anyAlive && !anyRocket) return;
+    if (!fwActive && !anyAlive && !anyRocket)
+        return;
 
     float asp = 1400.0f / 800.0f;
     static int strobeCounter = 0;
@@ -1009,21 +1244,26 @@ static void drawFireworks()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // Draw particles
-    for (int i = 0; i < FW_MAX_PARTICLES; i++) {
+    for (int i = 0; i < FW_MAX_PARTICLES; i++)
+    {
         FWParticle &p = fwParticles[i];
-        if (!p.active) continue;
+        if (!p.active)
+            continue;
 
-        float lifeN = fmaxf(0.0f, p.life);   // 0..1 normalised
+        float lifeN = fmaxf(0.0f, p.life); // 0..1 normalised
 
-        if (p.isTrail) {
+        if (p.isTrail)
+        {
             // Smoke/trail puff — grey, large, very transparent
             unsigned char a = (unsigned char)(lifeN * lifeN * 80.0f);
-            if (a < 3) continue;
+            if (a < 3)
+                continue;
             glColor4ub(p.r, p.g, p.b, a);
             glBegin(GL_TRIANGLE_FAN);
             glVertex2f(p.x, p.y);
             int segs = 8;
-            for (int s = 0; s <= segs; s++) {
+            for (int s = 0; s <= segs; s++)
+            {
                 float ang = s * 2.0f * PI / segs;
                 glVertex2f(p.x + cosf(ang) * p.size,
                            p.y + sinf(ang) * p.size * 0.6f);
@@ -1034,19 +1274,24 @@ static void drawFireworks()
 
         // Strobe — flicker effect
         bool strobeOn = true;
-        if (p.strobePhase != 0) {
+        if (p.strobePhase != 0)
+        {
             strobeOn = ((strobeCounter + p.strobePhase) % 4) < 2;
         }
-        if (!strobeOn) continue;
+        if (!strobeOn)
+            continue;
 
         // Alpha: bright for first 60% of life, then fades fast
         float alphaN;
-        if (lifeN > 0.60f) alphaN = 1.0f;
-        else                alphaN = lifeN / 0.60f;
-        alphaN = alphaN * alphaN;  // quadratic fade
+        if (lifeN > 0.60f)
+            alphaN = 1.0f;
+        else
+            alphaN = lifeN / 0.60f;
+        alphaN = alphaN * alphaN; // quadratic fade
 
         unsigned char a = (unsigned char)(alphaN * 245.0f);
-        if (a < 8) continue;  // Low threshold - particles fade out naturally
+        if (a < 8)
+            continue; // Low threshold - particles fade out naturally
 
         // Glow halo
         {
@@ -1055,7 +1300,8 @@ static void drawFireworks()
             glBegin(GL_TRIANGLE_FAN);
             glVertex2f(p.x, p.y);
             float haloSz = p.size * 5.0f;
-            for (int s = 0; s <= 10; s++) {
+            for (int s = 0; s <= 10; s++)
+            {
                 float ang = s * 2.0f * PI / 10.0f;
                 glColor4ub(p.r, p.g, p.b, 0);
                 glVertex2f(p.x + cosf(ang) * haloSz / asp,
@@ -1068,7 +1314,8 @@ static void drawFireworks()
         glColor4ub(p.r, p.g, p.b, a);
         glBegin(GL_TRIANGLE_FAN);
         glVertex2f(p.x, p.y);
-        for (int s = 0; s <= 10; s++) {
+        for (int s = 0; s <= 10; s++)
+        {
             float ang = s * 2.0f * PI / 10.0f;
             unsigned char cr = (unsigned char)(fminf(255.0f, p.r * 1.3f));
             unsigned char cg = (unsigned char)(fminf(255.0f, p.g * 1.3f));
@@ -1096,16 +1343,19 @@ static void drawFireworks()
     }
 
     // Draw rockets (ascending phase)
-    for (int i = 0; i < FW_MAX_ROCKETS; i++) {
+    for (int i = 0; i < FW_MAX_ROCKETS; i++)
+    {
         FWRocket &rk = fwRockets[i];
-        if (!rk.active) continue;
+        if (!rk.active)
+            continue;
 
         // Rocket body — bright dot
         glColor4ub(rk.r, rk.g, rk.b, 240);
         glBegin(GL_TRIANGLE_FAN);
         glVertex2f(rk.x, rk.y);
         float rSz = 0.006f;
-        for (int s = 0; s <= 12; s++) {
+        for (int s = 0; s <= 12; s++)
+        {
             float ang = s * 2.0f * PI / 12.0f;
             glColor4ub(255, 255, 220, 80);
             glVertex2f(rk.x + cosf(ang) * rSz / asp,
@@ -1118,7 +1368,8 @@ static void drawFireworks()
         glColor4ub(rk.r, rk.g, rk.b, 70);
         glVertex2f(rk.x, rk.y);
         float gSz = 0.020f;
-        for (int s = 0; s <= 12; s++) {
+        for (int s = 0; s <= 12; s++)
+        {
             float ang = s * 2.0f * PI / 12.0f;
             glColor4ub(rk.r, rk.g, rk.b, 0);
             glVertex2f(rk.x + cosf(ang) * gSz / asp,
@@ -1160,7 +1411,7 @@ static float getTwilightBlend()
     return smoothStep(band * strength); // depends on the near horizon when sun is in the top of the height the near horizon will  be 0
 }
 
-//Internal helpers
+// Internal helpers
 static float lerpF(float a, float b, float t) { return a + (b - a) * t; }
 static float getDaylight() //[Prottoy]
 {
@@ -1174,7 +1425,7 @@ static float getTwilight() //[Prottoy]
 static void getSunPos(float &sx, float &sy) //[Prottoy]
 {
     sx = -cosf(dayAngle) * 0.82f;
-    sy = 0.04f + sinf(dayAngle) * 0.79f; //sun arch
+    sy = 0.04f + sinf(dayAngle) * 0.79f; // sun arch
 }
 
 static void getMoonPos(float &mx, float &my) //[Prottoy]
@@ -1324,8 +1575,8 @@ static void drawBuilding(float left, float bottom, float right, float top, int w
 // ================================================================
 static void drawLoungeTerrace(float vX, float vY, float vW, float vH, float hangH)
 {
-    solidQ(vX - 0.015f, vY, vX + vW + 0.015f, vY + vH * 0.26f, 60, 50, 35);// ground layer ->brown
-    solidQ(vX - 0.015f, vY - 0.005f, vX + vW + 0.015f, vY + vH * 0.30f, 48, 128, 38); //middle layer
+    solidQ(vX - 0.015f, vY, vX + vW + 0.015f, vY + vH * 0.26f, 60, 50, 35);               // ground layer ->brown
+    solidQ(vX - 0.015f, vY - 0.005f, vX + vW + 0.015f, vY + vH * 0.30f, 48, 128, 38);     // middle layer
     solidQ(vX - 0.015f, vY + vH * 0.12f, vX + vW + 0.015f, vY + vH * 0.18f, 32, 108, 28); // Base layers have been created with this quads.
     int nP = 24;
     for (int i = 0; i < nP; i++)
@@ -1337,7 +1588,7 @@ static void drawLoungeTerrace(float vX, float vY, float vW, float vH, float hang
         glBegin(GL_QUADS);
         glVertex2f(px + pw * 0.42f, vY + vH * 0.18f);
         glVertex2f(px + pw * 0.58f, vY + vH * 0.18f);
-        glVertex2f(px + pw * 0.58f, vY + vH * 0.18f + ph * 0.30f); //pots for trees
+        glVertex2f(px + pw * 0.58f, vY + vH * 0.18f + ph * 0.30f); // pots for trees
         glVertex2f(px + pw * 0.42f, vY + vH * 0.18f + ph * 0.30f); // Detailing vertical quads have been created
         glEnd();
         int sh = i % 4;
@@ -1545,7 +1796,7 @@ static void drawRightAnnex(float mainRight, float by, float bh, float fH, int NF
     alphaQ(aX - 0.002f, aY, aX + 0.004f, aTop, 255, 255, 255, 20);
     solidQ(aX + aW - 0.005f, aY, aX + aW + 0.014f, aTop, 155, 157, 153);
     solidQ(aX - 0.004f, aTop, aX + aW + 0.010f, aTop + 0.018f, 155, 158, 154);
-    solidQ(aX - 0.004f, aTop + 0.016f, aX + aW + 0.010f, aTop + 0.022f, 140, 143, 138);// Top roof elements
+    solidQ(aX - 0.004f, aTop + 0.016f, aX + aW + 0.010f, aTop + 0.022f, 140, 143, 138); // Top roof elements
     solidQ(aX + aW * 0.10f, aTop + 0.022f, aX + aW * 0.35f, aTop + 0.042f, 88, 92, 98);
     solidQ(aX + aW * 0.45f, aTop + 0.022f, aX + aW * 0.75f, aTop + 0.038f, 76, 80, 86);
     solidQ(aX, aTop - fH * 0.85f, aX + aW, aTop - fH * 0.70f, 44, 50, 58);
@@ -1591,10 +1842,10 @@ static void drawRightAnnex(float mainRight, float by, float bh, float fH, int NF
 static void a9Rect(float x1, float y1, float x2, float y2)
 {
     glBegin(GL_QUADS);
-    glVertex2f(x1, y1);   // bottom-left corner
-    glVertex2f(x2, y1);   // bottom-right corner
-    glVertex2f(x2, y2);   // top-right corner
-    glVertex2f(x1, y2);   // top-left corner
+    glVertex2f(x1, y1); // bottom-left corner
+    glVertex2f(x2, y1); // bottom-right corner
+    glVertex2f(x2, y2); // top-right corner
+    glVertex2f(x1, y2); // top-left corner
     glEnd();
 }
 
@@ -1608,7 +1859,7 @@ static void a9Rect(float x1, float y1, float x2, float y2)
 // ----------------------------------------------------------------
 static void a9Window(float x, float y, float w, float h)
 {
-    const float pad = 0.014f;          // frame thickness on each side
+    const float pad = 0.014f; // frame thickness on each side
 
     // Step 1 — outer grey frame
     glColor3ub(105, 110, 122);
@@ -1637,8 +1888,8 @@ static void a9Window(float x, float y, float w, float h)
 static void drawAnnex9()
 {
     glPushMatrix();
-    glTranslatef(-0.445f, -0.2085f, 0.0f);   // move into final position
-    glScalef(0.35235f, 0.36066f, 1.0f);      // shrink the local design
+    glTranslatef(-0.445f, -0.2085f, 0.0f); // move into final position
+    glScalef(0.35235f, 0.36066f, 1.0f);    // shrink the local design
 
     // -------- Main facade (one big light-grey rectangle) --------
     glColor3ub(226, 229, 232);
@@ -1663,12 +1914,12 @@ static void drawAnnex9()
 
     //  Roof caps over the two side wings
     glColor3ub(148, 152, 160);
-    a9Rect(-0.74f, 0.80f, -0.41f, 0.90f);   // left roof cap(boottom L corner and top right corner)
-    a9Rect(0.41f,  0.80f, 0.74f, 0.90f);    // right roof cap
+    a9Rect(-0.74f, 0.80f, -0.41f, 0.90f); // left roof cap(boottom L corner and top right corner)
+    a9Rect(0.41f, 0.80f, 0.74f, 0.90f);   // right roof cap
 
     // Central blue glass tower
     glColor3ub(26, 48, 106);
-    a9Rect(-0.30f, -0.42f, 0.30f, 0.80f);   // dark blue base of tower
+    a9Rect(-0.30f, -0.42f, 0.30f, 0.80f); // dark blue base of tower
 
     // Lighter blue stripe on the left edge (looks like a side panel)
     glColor3ub(45, 76, 138);
@@ -1685,9 +1936,9 @@ static void drawAnnex9()
     a9Rect(-0.009f, -0.42f, 0.009f, 0.80f);
 
     // -------- Main entrance at the bottom of the tower --------
-    glColor3ub(150, 155, 165);                 // outer grey door frame
+    glColor3ub(150, 155, 165); // outer grey door frame
     a9Rect(-0.12f, -0.42f, 0.12f, -0.22f);
-    glColor3ub(18, 35, 80);                    // dark blue door glass
+    glColor3ub(18, 35, 80); // dark blue door glass
     a9Rect(-0.10f, -0.42f, 0.10f, -0.24f);
 
     // -------- Window grid on the two side wings --------
@@ -1696,10 +1947,10 @@ static void drawAnnex9()
     //   lcx[]      : X-coordinates of the 2 columns on the LEFT wing
     //   rcx[]      : X-coordinates of the 2 columns on the RIGHT wing
     //   rowY[]     : Y-coordinates of the 5 rows (same for both wings)
-    const float winW   = 0.18f;
-    const float winH   = 0.12f;
-    const float lcx[]  = {-0.79f, -0.54f}; //left Wbuilding (left wing er L col window & R col window)
-    const float rcx[]  = { 0.36f,  0.61f};  //right  Wbuilding (right wing er L col window & R col window)
+    const float winW = 0.18f;
+    const float winH = 0.12f;
+    const float lcx[] = {-0.79f, -0.54f}; // left Wbuilding (left wing er L col window & R col window)
+    const float rcx[] = {0.36f, 0.61f};   // right  Wbuilding (right wing er L col window & R col window)
     const float rowY[] = {-0.32f, -0.09f, 0.13f, 0.35f, 0.57f};
 
     for (int row = 0; row < 5; row++)
@@ -1716,14 +1967,14 @@ static void drawAnnex9()
     // -------- Outline around the whole facade for a clean edge --------
     glColor3ub(160, 163, 168);
     glLineWidth(1.2f);
-    glBegin(GL_LINE_LOOP); //edge beside whole building
+    glBegin(GL_LINE_LOOP); // edge beside whole building
     glVertex2f(-0.85f, -0.42f);
-    glVertex2f( 0.85f, -0.42f);
-    glVertex2f( 0.85f,  0.80f);
-    glVertex2f(-0.85f,  0.80f);
+    glVertex2f(0.85f, -0.42f);
+    glVertex2f(0.85f, 0.80f);
+    glVertex2f(-0.85f, 0.80f);
     glEnd();
 
-    glPopMatrix();   // restore the matrix so other drawings are normal
+    glPopMatrix(); // restore the matrix so other drawings are normal
 }
 
 // ================================================================
@@ -1879,6 +2130,48 @@ static void drawParkingExitBuilding()
     glVertex2f(-0.86f, 0.18f);
     glVertex2f(-0.86f, 0.45f);
     glVertex2f(-0.96f, 0.45f);
+    glEnd();
+
+    glPopMatrix();
+}
+
+// ================================================================
+//  PARKING LOT ENTRY ARM (boom barrier)                  [Shajmin]
+//
+//  A single red quad that pivots open/closed at the entrance of
+//  the parking lot.
+//    • parkingArmAngle =  0°  →  closed (horizontal)
+//    • parkingArmAngle ≈ 85°  →  open   (nearly vertical)
+//
+//  The 'u' (open) and 'i' (close) keys set parkingArmTarget; the
+//  current angle eases towards the target in update() so the
+//  rotation animates smoothly across many frames instead of an
+//  instant snap — making the rotation clearly visible.
+//
+//  Key note: originally planned as 'o' (open) / 'p' (close), but
+//  those keys are taken by Sadia's rain-speed controls, so they
+//  were remapped to 'u' / 'i' (adjacent on the keyboard).
+// ================================================================
+static void drawParkingArm() // [Shajmin]
+{
+    // Pivot point sits just to the right of the security booth.
+    const float pivotX = -0.905f;
+    const float pivotY = -0.510f;
+    const float armLen = 0.105f;
+    const float armHalfT = 0.008f;
+
+    // Move local origin to the pivot, rotate by parkingArmAngle,
+    // then draw the arm extending to the right from the origin.
+    glPushMatrix();
+    glTranslatef(pivotX, pivotY, 0.0f);
+    glRotatef(parkingArmAngle, 0.0f, 0.0f, 1.0f); // dynamic rotation [Shajmin]
+
+    glColor3ub(220, 50, 50); // red
+    glBegin(GL_QUADS);
+    glVertex2f(0.0f, -armHalfT);
+    glVertex2f(armLen, -armHalfT);
+    glVertex2f(armLen, armHalfT);
+    glVertex2f(0.0f, armHalfT);
     glEnd();
 
     glPopMatrix();
@@ -2704,20 +2997,20 @@ static void drawDBuilding()
 
     // ── NIGHT LIGHTING on left curtain wall (drawn after mullions) ──
     {
-        float db = getDayBlend(); // just giving me the dayfactor value.
+        float db = getDayBlend();           // just giving me the dayfactor value.
         float night = smoothStep(1.f - db); // making the day to night and night to day transition like S curve.
         if (night > 0.02f)
         {
-            float nf = night * night; // intesnsified this effect more
-            const float leftMargin = 0.020f;   // How far from left edge the light starts
-            const float rightMargin = 0.014f;  // How far from right edge the light ends
+            float nf = night * night;         // intesnsified this effect more
+            const float leftMargin = 0.020f;  // How far from left edge the light starts
+            const float rightMargin = 0.014f; // How far from right edge the light ends
             for (int f = 0; f < NF; f++)
             {
                 if (f == 2 || f == 4 || f == 8 || f == 9)
                     continue;
                 float fy2 = by + f * fH;
-                float wY2 = fy2 + fH * 0.16f;      // Top Y of the light band
-                float wH2 = fH * 0.62f;            // Height of the light band
+                float wY2 = fy2 + fH * 0.16f; // Top Y of the light band
+                float wH2 = fH * 0.62f;       // Height of the light band
                 float brightness = 0.75f + 0.25f * ((f * 7) % 5) / 4.0f;
                 unsigned char alpha = (unsigned char)(nf * 185.f * brightness);
                 glColor4ub(255, 218, 155, alpha);
@@ -2731,7 +3024,7 @@ static void drawDBuilding()
                 {
                     float frac = leftMargin / (glassRight - bx) +
                                  (float)s / steps *
-                                     ((glassRight - rightMargin - bx) - leftMargin) / (glassRight - bx); //Polygon shaped brightness br created on to the left curtain
+                                     ((glassRight - rightMargin - bx) - leftMargin) / (glassRight - bx); // Polygon shaped brightness br created on to the left curtain
                     float xBase = bx + frac * (glassRight - bx);
                     float tNorm = wY2 - by; // how far down the building
                     float bow = 0.009f * sinf((tNorm / bh) * PI) * (1.f - frac * 0.155f);
@@ -3204,6 +3497,7 @@ static void drawRoadAndPlayground()
     drawParkingLot();          // [Emad]    asphalt floor, bay lines, dashed lane, border
     drawParkedCars();          // [Shajmin] static parked cars filling the bays
     drawParkingExitBuilding(); // [Shajmin] security booth at the left side of the lot
+    drawParkingArm();          // [Shajmin] rotating boom barrier (dynamic rotation)
 
     // ── LAMP POSTS IN PARKING LOT ────────────────────────────────
     {
@@ -3934,7 +4228,7 @@ static void drawWhiteBlossomTree(float x, float y, float phaseOffset)
     // Layer 3 — bright white mid-canopy
     diskFan(x - 0.014f, topY + 0.054f, 0.042f, 0.036f, 22, 242, 240, 248);
     diskFan(x + 0.018f, topY + 0.050f, 0.040f, 0.034f, 22, 240, 238, 246);
-    diskFan(x - 0.030f, topY + 0.044f, 0.034f, 0.030f, 20, 236, 234, 243); //For drawing ellipse, you give two radius one for, horizontal, and other for vertical
+    diskFan(x - 0.030f, topY + 0.044f, 0.034f, 0.030f, 20, 236, 234, 243); // For drawing ellipse, you give two radius one for, horizontal, and other for vertical
     diskFan(x + 0.034f, topY + 0.038f, 0.036f, 0.032f, 20, 238, 236, 245);
 
     // Layer 4 — luminous upper white
@@ -4247,10 +4541,10 @@ static void drawOakTree(float x, float y, float phaseOffset) //[Prottoy]
     glColor4ub(102, 195, 65, 75);
     glBegin(GL_TRIANGLE_FAN);
     glVertex2f(x + 0.012f, foliageY + 0.066f);
-    for(int k=0;k<=12;k++)
+    for (int k = 0; k <= 12; k++)
     {
-        float a=k*2.f*PI/12.f;
-        glVertex2f(x+0.012f+cosf(a)*0.014f,foliageY+0.066f+sinf(a)*0.012f);
+        float a = k * 2.f * PI / 12.f;
+        glVertex2f(x + 0.012f + cosf(a) * 0.014f, foliageY + 0.066f + sinf(a) * 0.012f);
     }
     glEnd();
 
@@ -4455,12 +4749,14 @@ static void drawBlossomTree(float x, float y, float phaseOffset)
 
     // ── Blossom canopy: 6-layer depth model ──
     // Layer 1 — deep shadow interior
-    if (summerMode) {
+    if (summerMode)
+    {
         diskFan(x, topY + 0.012f, 0.055f, 0.048f, 22, 180, 130, 50);
         diskFan(x - 0.032f, topY + 0.006f, 0.040f, 0.036f, 20, 170, 120, 45);
         diskFan(x + 0.030f, topY + 0.002f, 0.038f, 0.034f, 20, 175, 125, 48);
     }
-    else {
+    else
+    {
         // Original spring/pink colors
         diskFan(x, topY + 0.012f, 0.055f, 0.048f, 22, 170, 108, 138);
         diskFan(x - 0.032f, topY + 0.006f, 0.040f, 0.036f, 20, 162, 100, 130);
@@ -4468,12 +4764,14 @@ static void drawBlossomTree(float x, float y, float phaseOffset)
     }
 
     // Layer 2 — base fill
-    if (summerMode) {
+    if (summerMode)
+    {
         diskFan(x - 0.015f, topY + 0.030f, 0.042f, 0.036f, 22, 235, 180, 60);
         diskFan(x + 0.018f, topY + 0.026f, 0.040f, 0.034f, 22, 230, 175, 55);
         diskFan(x, topY + 0.038f, 0.044f, 0.038f, 22, 240, 185, 65);
     }
-    else {
+    else
+    {
         // Original spring/pink colors
         diskFan(x - 0.015f, topY + 0.030f, 0.042f, 0.036f, 22, 208, 140, 168);
         diskFan(x + 0.018f, topY + 0.026f, 0.040f, 0.034f, 22, 204, 136, 164);
@@ -4481,13 +4779,15 @@ static void drawBlossomTree(float x, float y, float phaseOffset)
     }
 
     // Layer 3 — mid canopy
-    if (summerMode) {
+    if (summerMode)
+    {
         diskFan(x - 0.012f, topY + 0.050f, 0.036f, 0.030f, 20, 250, 210, 70);
         diskFan(x + 0.016f, topY + 0.046f, 0.034f, 0.028f, 20, 248, 205, 68);
         diskFan(x - 0.026f, topY + 0.040f, 0.028f, 0.025f, 18, 245, 200, 65);
         diskFan(x + 0.030f, topY + 0.034f, 0.030f, 0.026f, 18, 252, 208, 72);
     }
-    else {
+    else
+    {
         // Original spring/pink colors
         diskFan(x - 0.012f, topY + 0.050f, 0.036f, 0.030f, 20, 228, 158, 185);
         diskFan(x + 0.016f, topY + 0.046f, 0.034f, 0.028f, 20, 224, 154, 182);
@@ -4496,12 +4796,14 @@ static void drawBlossomTree(float x, float y, float phaseOffset)
     }
 
     // Layer 4 — bright upper
-    if (summerMode) {
+    if (summerMode)
+    {
         diskFan(x + 0.004f, topY + 0.062f, 0.028f, 0.024f, 18, 255, 230, 110);
         diskFan(x - 0.018f, topY + 0.056f, 0.022f, 0.020f, 16, 255, 225, 100);
         diskFan(x + 0.022f, topY + 0.052f, 0.024f, 0.022f, 16, 255, 228, 105);
     }
-    else {
+    else
+    {
         // Original spring/pink colors
         diskFan(x + 0.004f, topY + 0.062f, 0.028f, 0.024f, 18, 244, 178, 205);
         diskFan(x - 0.018f, topY + 0.056f, 0.022f, 0.020f, 16, 240, 172, 200);
@@ -4801,8 +5103,7 @@ static void drawRoadsideItems() //[Prottoy]
         float x;
         int type;
         float side;
-    }
-    botItems[] = {
+    } botItems[] = {
         {-0.85f, 0, +1},
         {-0.67f, 3, +1},
         {-0.49f, 1, +1},
@@ -5013,7 +5314,7 @@ static void updatePetals() // [Prottoy]
             restingPetals[slot].x = p.x;
             float r = petalRand();
             if (r < 0.20f)
-                restingPetals[slot].y = -0.710f + petalRand() * 0.012f; //Placin where it will rest on the footpath area or on the road
+                restingPetals[slot].y = -0.710f + petalRand() * 0.012f; // Placin where it will rest on the footpath area or on the road
             else
                 restingPetals[slot].y = -0.730f - petalRand() * 0.260f;
             restingPetals[slot].angle = petalRand() * 360.f; // these are the propertise of resting paddles
@@ -5025,7 +5326,7 @@ static void updatePetals() // [Prottoy]
                 restingCount = MAX_RESTING;
 
             // Respawn from a random tree
-            int bi = (int)(petalRand() * nBlossom);// choose a random tree to start on.
+            int bi = (int)(petalRand() * nBlossom); // choose a random tree to start on.
             float bxNew = blossomX[bi];
             bool isTopRow = (bi == 0 || bi == 1 || bi == 4 || bi == 5 || bi == 6); // start respwaning from a arandom tree.
             bool isWhite = (bi <= 3);
@@ -5048,7 +5349,7 @@ static void updatePetals() // [Prottoy]
 
             // setting attributes for every respawning paddles
             p.x = bxNew + (petalRand() - 0.5f) * 0.14f;
-            p.y = canopyBot + petalRand() * (canopyTop - canopyBot);// repositioning the paddles
+            p.y = canopyBot + petalRand() * (canopyTop - canopyBot); // repositioning the paddles
             p.vx = (petalRand() - 0.5f) * 0.0025f;
             p.vy = -(0.0014f + petalRand() * 0.0013f);
             p.angle = petalRand() * 360.f;
@@ -5077,16 +5378,16 @@ static void updateTraffic()
     {
         if (carLane[i] == 0) // top lane = going RIGHT
         {
-            carX[i] += 0.0030f * carSpeedMult;  // dynamic translation speed [Emad]
-            if (carX[i] > 1.10f) // gone off the right edge?
+            carX[i] += 0.0030f * carSpeedMult; // dynamic translation speed [Emad]
+            if (carX[i] > 1.10f)               // gone off the right edge?
             {
                 carX[i] = -1.10f; // wrap back to the left edge
             }
         }
         else // bottom lane = going LEFT
         {
-            carX[i] -= 0.0028f * carSpeedMult;  // dynamic translation speed [Emad]
-            if (carX[i] < -1.10f) // gone off the left edge?
+            carX[i] -= 0.0028f * carSpeedMult; // dynamic translation speed [Emad]
+            if (carX[i] < -1.10f)              // gone off the left edge?
             {
                 carX[i] = 1.10f; // wrap back to the right edge
             }
@@ -5361,7 +5662,7 @@ static void drawCar(float cx, float cy, float bw, float bh, int colorCode, bool 
     unsigned char bodyR, bodyG, bodyB;
     unsigned char cabR, cabG, cabB;
     unsigned char winR, winG, winB;
-    pickCarColor(colorCode, bodyR, bodyG, bodyB,cabR, cabG, cabB,winR, winG, winB);
+    pickCarColor(colorCode, bodyR, bodyG, bodyB, cabR, cabG, cabB, winR, winG, winB);
 
     // sx flips the front/back side of the car when it faces left
     float sx;
@@ -5769,8 +6070,8 @@ static void initAutumn() // [Emad]
         // and a random spin speed (in deg/tick) in the range -3..+3 so
         // some leaves rotate clockwise, some counter-clockwise, and a
         // few barely rotate at all (= more realistic).
-        leafAngle[i] = (float)(rand() % 360);                       // 0..359 deg
-        leafSpin[i]  = (((rand() % 200) / 100.0f) - 1.0f) * 3.0f;   // -3..+3 deg/tick
+        leafAngle[i] = (float)(rand() % 360);                    // 0..359 deg
+        leafSpin[i] = (((rand() % 200) / 100.0f) - 1.0f) * 3.0f; // -3..+3 deg/tick
     }
 }
 
@@ -5810,16 +6111,16 @@ static void drawAutumn() // [Emad]
         // the world origin.  glPushMatrix/glPopMatrix isolates these
         // transforms so they don't leak into anything else drawn after.
         glPushMatrix();
-        glTranslatef(leafX[i], leafY[i], 0.0f);     // dynamic translation
-        glRotatef(leafAngle[i], 0.0f, 0.0f, 1.0f);  // dynamic rotation (animated)
-        glScalef(leafScale, leafScale, 1.0f);       // dynamic scaling (key-controlled)
+        glTranslatef(leafX[i], leafY[i], 0.0f);    // dynamic translation
+        glRotatef(leafAngle[i], 0.0f, 0.0f, 1.0f); // dynamic rotation (animated)
+        glScalef(leafScale, leafScale, 1.0f);      // dynamic scaling (key-controlled)
 
         // Diamond drawn around origin (matrix handles the actual placement)
         glBegin(GL_QUADS);
-        glVertex2f( 0.0f,    0.012f); // top
-        glVertex2f( 0.010f,  0.0f);   // right
-        glVertex2f( 0.0f,   -0.012f); // bottom
-        glVertex2f(-0.010f,  0.0f);   // left
+        glVertex2f(0.0f, 0.012f);  // top
+        glVertex2f(0.010f, 0.0f);  // right
+        glVertex2f(0.0f, -0.012f); // bottom
+        glVertex2f(-0.010f, 0.0f); // left
         glEnd();
         glPopMatrix();
     }
@@ -5842,8 +6143,10 @@ static void updateAutumn() // [Emad]
         // the angle to keep it bounded; glRotatef handles any value but
         // wrapping avoids float drift over very long sessions.
         leafAngle[i] += leafSpin[i];
-        if (leafAngle[i] >= 360.0f) leafAngle[i] -= 360.0f;
-        if (leafAngle[i] <    0.0f) leafAngle[i] += 360.0f;
+        if (leafAngle[i] >= 360.0f)
+            leafAngle[i] -= 360.0f;
+        if (leafAngle[i] < 0.0f)
+            leafAngle[i] += 360.0f;
 
         if (leafY[i] < -1.0f)
         {
@@ -5953,15 +6256,15 @@ static void drawWinter() // [Shajmin]
     glColor3ub(255, 255, 255); // white snow
     for (int i = 0; i < MAX_SNOW; i++)
     {
-        // Tiny square (4 vertices) — small enough to look like a flake
-        // glBegin(GL_QUADS);
-        // glVertex2f(snowX[i] - 0.004f, snowY[i] - 0.004f);
-        // glVertex2f(snowX[i] + 0.004f, snowY[i] - 0.004f);
-        // glVertex2f(snowX[i] + 0.004f, snowY[i] + 0.004f);
-        // glVertex2f(snowX[i] - 0.004f, snowY[i] + 0.004f);
-        // glEnd();
-
-        diskFan(snowX[i], snowY[i], 0.006f, 0.006f, 8, 255, 255, 255);
+        // To make the flake size adjustable at runtime,
+        // we translate the local origin to the flake's position, then
+        // glScalef() by snowScale, then draw the disk at the origin.
+        // Press 'v' to shrink every flake, 'b' to grow them.
+        glPushMatrix();
+        glTranslatef(snowX[i], snowY[i], 0.0f);
+        glScalef(snowScale, snowScale, 1.0f); // [Shajmin]
+        diskFan(0.0f, 0.0f, 0.006f, 0.006f, 8, 255, 255, 255);
+        glPopMatrix();
     }
 }
 
@@ -6146,8 +6449,11 @@ static void updatePlayers() // [Shajmin]
 
     for (int i = 0; i < BBALL_COUNT; i++)
     {
-        bballX[i] += bballVX[i];
-        bballY[i] += bballVY[i];
+        // 'h' / 'j' keys scale the
+        // per-tick displacement without touching the raw velocity, so
+        // bouncing still works.
+        bballX[i] += bballVX[i] * playerSpeedMult; // [Shajmin]
+        bballY[i] += bballVY[i] * playerSpeedMult; // [Shajmin]
 
         // Bounce off the left or right wall
         if (bballX[i] < bbLeft)
@@ -6182,8 +6488,8 @@ static void updatePlayers() // [Shajmin]
 
     for (int i = 0; i < SOCCER_COUNT; i++)
     {
-        soccerX[i] += soccerVX[i];
-        soccerY[i] += soccerVY[i];
+        soccerX[i] += soccerVX[i] * playerSpeedMult; // [Shajmin]
+        soccerY[i] += soccerVY[i] * playerSpeedMult; // [Shajmin]
 
         if (soccerX[i] < fbLeft)
         {
@@ -6351,12 +6657,13 @@ static void drawSunAt(float sx, float sy)
     // Fade sun out near the horizon so it doesn't pop
     float dl = getDaylight();
     float alpha = fminf(dl * 3.5f, 1.0f); // full opacity once past dawn
-    if (alpha <= 0.f) //adjusting the transparency of the sun during sunrise
+    if (alpha <= 0.f)                     // adjusting the transparency of the sun during sunrise
         return;
 
     // Zidane - Summer Season: intensify sun during summer days
     float intensity = 1.0f;
-    if (summerMode && isDay) {
+    if (summerMode && isDay)
+    {
         intensity = 1.4f;
     }
 
@@ -6462,7 +6769,7 @@ static void drawMoon()
 
     // Moon disc (warm white)
     glBegin(GL_TRIANGLE_FAN);
-    glColor4ub(238, 243, 255, (unsigned char)(250 * alpha)); //background white circle
+    glColor4ub(238, 243, 255, (unsigned char)(250 * alpha)); // background white circle
     glVertex2f(mx, my);
     for (int i = 0; i <= SEG; i++)
     {
@@ -6475,7 +6782,7 @@ static void drawMoon()
     // Crescent shadow — dark disc offset to the right
     // Its colour must exactly match the night sky at that position
     glBegin(GL_TRIANGLE_FAN);
-    glColor4ub(5, 5, 20, (unsigned char)(255 * alpha)); //background cascked dark grey circle
+    glColor4ub(5, 5, 20, (unsigned char)(255 * alpha)); // background cascked dark grey circle
     glVertex2f(mx + 0.013f / asp, my);
     for (int i = 0; i <= SEG; i++)
     {
@@ -6536,7 +6843,7 @@ static void updateDayNight()
     if (isDay)
     {
         dayAngle += speed;
-        if (dayAngle >= PI) //PI=180
+        if (dayAngle >= PI) // PI=180
         {
             dayAngle = 0.0f;
             isDay = 0;
@@ -6583,28 +6890,29 @@ void keyboard(unsigned char key, int x, int y)
 
     case 's': // Spring mode (falling petals)
         springMode = true;
-        rainMode   = false;
+        rainMode = false;
         autumnMode = false;
         winterMode = false;
         summerMode = false;
-        resetThunderstorm();  // kill lightning + sky flash
+        resetThunderstorm(); // kill lightning + sky flash
         stopRainSound();
         break;
 
     case 'r': // Rainy season mode (rain drops, umbrellas)
-        rainMode   = true;
+        rainMode = true;
         springMode = false;
         autumnMode = false;
         winterMode = false;
         summerMode = false;
-        resetThunderstorm();  // plain rain — no thunder unless 't' pressed
-        if (!rainSoundPlaying) playRainSound();
+        resetThunderstorm(); // plain rain — no thunder unless 't' pressed
+        if (!rainSoundPlaying)
+            playRainSound();
         break;
 
     case 'a': // Autumn mode — falling leaves (Emad)
         autumnMode = true;
         springMode = false;
-        rainMode   = false;
+        rainMode = false;
         winterMode = false;
         summerMode = false;
         resetThunderstorm();
@@ -6614,7 +6922,7 @@ void keyboard(unsigned char key, int x, int y)
     case 'w': // Winter mode — falling snow (Shajmin)
         winterMode = true;
         springMode = false;
-        rainMode   = false;
+        rainMode = false;
         autumnMode = false;
         summerMode = false;
         resetThunderstorm();
@@ -6624,40 +6932,46 @@ void keyboard(unsigned char key, int x, int y)
     case 'g': // Summer mode — mangoes, jackfruits, heat haze, stall, birds
         summerMode = true;
         springMode = false;
-        rainMode   = false;
+        rainMode = false;
         autumnMode = false;
         winterMode = false;
         resetThunderstorm();
         stopRainSound();
         break;
-    case '+':   // increase breeze speed
-    case '=':   // same physical key without Shift
+    case '+': // increase breeze speed
+    case '=': // same physical key without Shift
         breezeSpeed += 0.004f;
-        if (breezeSpeed > 0.080f) breezeSpeed = 0.080f;  // cap at ~5× default
+        if (breezeSpeed > 0.080f)
+            breezeSpeed = 0.080f; // cap at ~5× default
         break;
 
-    case '-':   // decrease breeze speed
+    case '-': // decrease breeze speed
     case '_':
         breezeSpeed -= 0.004f;
-        if (breezeSpeed < 0.002f) breezeSpeed = 0.002f;  // floor — never fully stops
+        if (breezeSpeed < 0.002f)
+            breezeSpeed = 0.002f; // floor — never fully stops
         break;
-    case 'z':   // increase cloud size
+    case 'z': // increase cloud size
         cloudScale += 0.1f;
-        if (cloudScale > 3.0f) cloudScale = 3.0f;  // cap at 3x default
+        if (cloudScale > 3.0f)
+            cloudScale = 3.0f; // cap at 3x default
         break;
 
-    case 'x':   // decrease cloud size
+    case 'x': // decrease cloud size
         cloudScale -= 0.1f;
-        if (cloudScale < 0.2f) cloudScale = 0.2f;  // floor at 0.2x default
+        if (cloudScale < 0.2f)
+            cloudScale = 0.2f; // floor at 0.2x default
         break;
-    case '[':   // decrease cloud speed
+    case '[': // decrease cloud speed
         cloudSpeedMult -= 0.2f;
-        if (cloudSpeedMult < 0.0f) cloudSpeedMult = 0.0f;  // can fully stop
+        if (cloudSpeedMult < 0.0f)
+            cloudSpeedMult = 0.0f; // can fully stop
         break;
 
-    case ']':   // increase cloud speed
+    case ']': // increase cloud speed
         cloudSpeedMult += 0.2f;
-        if (cloudSpeedMult > 5.0f) cloudSpeedMult = 5.0f;  // cap at 5x
+        if (cloudSpeedMult > 5.0f)
+            cloudSpeedMult = 5.0f; // cap at 5x
         break;
 
     // ── Dynamic translation: car speed control (Emad) ──
@@ -6666,13 +6980,15 @@ void keyboard(unsigned char key, int x, int y)
     case ',':
     case '<':
         carSpeedMult -= 0.2f;
-        if (carSpeedMult < 0.0f) carSpeedMult = 0.0f;  // can fully stop
+        if (carSpeedMult < 0.0f)
+            carSpeedMult = 0.0f; // can fully stop
         break;
 
     case '.':
     case '>':
         carSpeedMult += 0.2f;
-        if (carSpeedMult > 5.0f) carSpeedMult = 5.0f;  // cap at 5x default
+        if (carSpeedMult > 5.0f)
+            carSpeedMult = 5.0f; // cap at 5x default
         break;
 
     // ── Dynamic scaling: autumn leaf size (Emad) ──
@@ -6680,23 +6996,70 @@ void keyboard(unsigned char key, int x, int y)
     // inside drawAutumn() and passed straight to glScalef().
     case 'k':
         leafScale -= 0.2f;
-        if (leafScale < 0.2f) leafScale = 0.2f;  // floor — never disappear
+        if (leafScale < 0.2f)
+            leafScale = 0.2f; // floor — never disappear
         break;
 
     case 'l':
         leafScale += 0.2f;
-        if (leafScale > 4.0f) leafScale = 4.0f;  // cap at 4x default
+        if (leafScale > 4.0f)
+            leafScale = 4.0f; // cap at 4x default
+        break;
+
+    // ── Dynamic translation: sports player speed [Shajmin] ──
+    // 'h' slows every basketball + football player down.
+    // 'j' speeds them up.  Multiplier is applied inside updatePlayers().
+    case 'h': // [Shajmin]
+        playerSpeedMult -= 0.2f;
+        if (playerSpeedMult < 0.2f)
+            playerSpeedMult = 0.2f; // floor — never freeze
+        break;
+
+    case 'j': // [Shajmin]
+        playerSpeedMult += 0.2f;
+        if (playerSpeedMult > 4.0f)
+            playerSpeedMult = 4.0f; // cap at 4x default
+        break;
+
+    // ── Dynamic scaling: winter snowflake size [Shajmin] ──
+    // 'v' shrinks every snowflake, 'b' grows them.  Read inside
+    // drawWinter() and passed straight to glScalef().
+    case 'v': // [Shajmin]
+        snowScale -= 0.2f;
+        if (snowScale < 0.4f)
+            snowScale = 0.4f; // floor — keep flakes visible
+        break;
+
+    case 'b': // [Shajmin]
+        snowScale += 0.2f;
+        if (snowScale > 3.0f)
+            snowScale = 3.0f; // cap at 3x default
+        break;
+
+    // ── Dynamic rotation: parking lot entry arm [Shajmin] ──
+    // 'u' tells the arm to open  (target ≈ 85°, points up).
+    // 'i' tells the arm to close (target =  0°, points right).
+    // The arm eases towards parkingArmTarget every tick in update(),
+    // so the rotation is smooth and clearly visible on screen.
+    case 'u': // [Shajmin]
+        parkingArmTarget = 85.0f;
+        break;
+
+    case 'i': // [Shajmin]
+        parkingArmTarget = 0.0f;
         break;
 
     // ── Rain speed control (Sadia) ──
-    case 'p':   // speed up rain
+    case 'p': // speed up rain
         rainSpeedMult += 0.5f;
-        if (rainSpeedMult > 5.0f) rainSpeedMult = 5.0f;
+        if (rainSpeedMult > 5.0f)
+            rainSpeedMult = 5.0f;
         break;
 
-    case 'o':   // slow down rain
+    case 'o': // slow down rain
         rainSpeedMult -= 0.5f;
-        if (rainSpeedMult < 0.0f) rainSpeedMult = 0.0f;
+        if (rainSpeedMult < 0.0f)
+            rainSpeedMult = 0.0f;
         break;
 
     // ── Thunderstorm cycle (Sadia) ──
@@ -6707,17 +7070,18 @@ void keyboard(unsigned char key, int x, int y)
     case 't':
         if (!thunderMode)
         {
-            thunderMode       = true;
-            rainMode          = true;
-            springMode        = false;
-            autumnMode        = false;
-            winterMode        = false;
-            summerMode        = false;
-            thunderIntensity  = 1;
-            thunderTimer      = 0.4f;   // first bolt comes quickly
-            lightningVisible  = false;
+            thunderMode = true;
+            rainMode = true;
+            springMode = false;
+            autumnMode = false;
+            winterMode = false;
+            summerMode = false;
+            thunderIntensity = 1;
+            thunderTimer = 0.4f; // first bolt comes quickly
+            lightningVisible = false;
             thunderFlashAlpha = 0.0f;
-            if (!rainSoundPlaying) playRainSound();
+            if (!rainSoundPlaying)
+                playRainSound();
         }
         else
         {
@@ -6725,23 +7089,24 @@ void keyboard(unsigned char key, int x, int y)
             if (thunderIntensity > 3)
             {
                 // 4th press — turn off
-                thunderMode      = false;
+                thunderMode = false;
                 thunderIntensity = 1;
                 lightningVisible = false;
-                thunderFlashAlpha= 0.0f;
+                thunderFlashAlpha = 0.0f;
             }
             else
             {
-                thunderTimer = 0.3f;  // show new size quickly
+                thunderTimer = 0.3f; // show new size quickly
             }
         }
         break;
 
     // ── FIREWORKS KEY ────────────────────────────────────────────
-    case 'f':   // start fireworks show
-        if (!fwActive) {
-            fwActive    = true;
-            fwTimer     = 0.0f;
+    case 'f': // start fireworks show
+        if (!fwActive)
+        {
+            fwActive = true;
+            fwTimer = 0.0f;
             fwLaunchIdx = 0;
             // Kill any leftover particles from last show
             for (int i = 0; i < FW_MAX_PARTICLES; i++)
@@ -7307,29 +7672,38 @@ static void drawDryGroundPatches()
 {
     glColor4ub(140, 100, 40, 180);
     glBegin(GL_POLYGON);
-    glVertex2f(0.50f, -0.690f); glVertex2f(0.55f, -0.695f);
-    glVertex2f(0.58f, -0.685f); glVertex2f(0.54f, -0.670f);
+    glVertex2f(0.50f, -0.690f);
+    glVertex2f(0.55f, -0.695f);
+    glVertex2f(0.58f, -0.685f);
+    glVertex2f(0.54f, -0.670f);
     glVertex2f(0.48f, -0.678f);
     glEnd();
     glBegin(GL_POLYGON);
-    glVertex2f(-0.75f, -0.685f); glVertex2f(-0.70f, -0.690f);
-    glVertex2f(-0.66f, -0.680f); glVertex2f(-0.70f, -0.665f);
+    glVertex2f(-0.75f, -0.685f);
+    glVertex2f(-0.70f, -0.690f);
+    glVertex2f(-0.66f, -0.680f);
+    glVertex2f(-0.70f, -0.665f);
     glVertex2f(-0.76f, -0.672f);
     glEnd();
     glColor3ub(90, 60, 20);
     glLineWidth(0.8f);
     glBegin(GL_LINES);
-    glVertex2f(0.52f, -0.688f); glVertex2f(0.56f, -0.680f);
-    glVertex2f(0.50f, -0.672f); glVertex2f(0.55f, -0.678f);
-    glVertex2f(-0.72f, -0.682f); glVertex2f(-0.68f, -0.672f);
-    glVertex2f(-0.74f, -0.668f); glVertex2f(-0.68f, -0.684f);
+    glVertex2f(0.52f, -0.688f);
+    glVertex2f(0.56f, -0.680f);
+    glVertex2f(0.50f, -0.672f);
+    glVertex2f(0.55f, -0.678f);
+    glVertex2f(-0.72f, -0.682f);
+    glVertex2f(-0.68f, -0.672f);
+    glVertex2f(-0.74f, -0.668f);
+    glVertex2f(-0.68f, -0.684f);
     glEnd();
 }
 
 static void drawWavyHeatHaze()
 {
     float db = getDayBlend();
-    if (!summerMode || db < 0.6f) return;
+    if (!summerMode || db < 0.6f)
+        return;
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     int nWaves = 20;
@@ -7350,8 +7724,8 @@ static void drawWavyHeatHaze()
     glColor4f(1.0f, 0.85f, 0.5f, 0.10f);
     glBegin(GL_QUADS);
     glVertex2f(-1.0f, -0.25f);
-    glVertex2f( 1.0f, -0.25f);
-    glVertex2f( 1.0f, -0.10f);
+    glVertex2f(1.0f, -0.25f);
+    glVertex2f(1.0f, -0.10f);
     glVertex2f(-1.0f, -0.10f);
     glEnd();
 }
@@ -7369,10 +7743,10 @@ static void drawSummerSky()
     float botG = lerpF(200.0f, 20.0f, night);
     float botB = lerpF(120.0f, 40.0f, night);
     glBegin(GL_QUADS);
-    glColor3f(topR/255.0f, topG/255.0f, topB/255.0f);
+    glColor3f(topR / 255.0f, topG / 255.0f, topB / 255.0f);
     glVertex2f(-1.0f, 1.0f);
     glVertex2f(1.0f, 1.0f);
-    glColor3f(botR/255.0f, botG/255.0f, botB/255.0f);
+    glColor3f(botR / 255.0f, botG / 255.0f, botB / 255.0f);
     glVertex2f(1.0f, -1.0f);
     glVertex2f(-1.0f, -1.0f);
     glEnd();
@@ -7410,7 +7784,8 @@ static void drawSummerTint()
 static void drawSummerHeatHaze()
 {
     float db = getDayBlend();
-    if (db < 0.2f) return;
+    if (db < 0.2f)
+        return;
     unsigned char hazeA = (unsigned char)(db * 45.0f);
     glColor4ub(255, 220, 140, hazeA);
     glBegin(GL_QUADS);
@@ -7437,7 +7812,7 @@ static void drawSummerHeatHaze()
 // ----------------------------------------------------------------
 static void drawSingleCloud(float cx, float cy, float size)
 {
-    float s = size * cloudScale;   // apply global scale to this cloud's size
+    float s = size * cloudScale; // apply global scale to this cloud's size
 
     glColor4ub(245, 248, 250, 220);
 
@@ -7532,12 +7907,13 @@ static void updateSpringClouds()
 //  optional branches, sky flash, and ground impact glow.
 // ================================================================
 static void generateLightningBolt(float startX, float startY,
-                                  float endX,   float endY,
+                                  float endX, float endY,
                                   int intensity)
 {
     // More segments = more jagged at higher intensity
-    lgSegCount = 4 + intensity * 3;  // lvl1=7, lvl2=10, lvl3=13
-    if (lgSegCount > MAX_LIGHTNING_SEGS) lgSegCount = MAX_LIGHTNING_SEGS;
+    lgSegCount = 4 + intensity * 3; // lvl1=7, lvl2=10, lvl3=13
+    if (lgSegCount > MAX_LIGHTNING_SEGS)
+        lgSegCount = MAX_LIGHTNING_SEGS;
 
     lgSegX[0] = startX;
     lgSegY[0] = startY;
@@ -7546,7 +7922,7 @@ static void generateLightningBolt(float startX, float startY,
     float dy = (endY - startY) / lgSegCount;
 
     // Jag amount grows with intensity
-    float jagAmt = 0.04f + intensity * 0.055f;  // lvl1=0.095, lvl2=0.15, lvl3=0.205
+    float jagAmt = 0.04f + intensity * 0.055f; // lvl1=0.095, lvl2=0.15, lvl3=0.205
 
     for (int i = 1; i < lgSegCount; i++)
     {
@@ -7567,10 +7943,10 @@ static void generateLightningBolt(float startX, float startY,
             float bStartX = lgSegX[splitSeg];
             float bStartY = lgSegY[splitSeg];
 
-            float bLen    = 0.15f + intensity * 0.08f;
-            float bAngle  = fwRandSym() * 0.9f;
-            float bEndX   = bStartX + cosf(bAngle) * bLen;
-            float bEndY   = bStartY - sinf(fabsf(bAngle)) * bLen * 0.6f;
+            float bLen = 0.15f + intensity * 0.08f;
+            float bAngle = fwRandSym() * 0.9f;
+            float bEndX = bStartX + cosf(bAngle) * bLen;
+            float bEndY = bStartY - sinf(fabsf(bAngle)) * bLen * 0.6f;
 
             int bSegs = 3 + intensity;
             branchX[b][0] = bStartX;
@@ -7594,32 +7970,38 @@ static void generateLightningBolt(float startX, float startY,
 
 static void drawThunderstorm()
 {
-    if (!thunderMode) return;
+    if (!thunderMode)
+        return;
 
     // Sky flash
     if (thunderFlashAlpha > 0.01f)
     {
         glColor4f(0.88f, 0.93f, 1.0f, thunderFlashAlpha);
         glBegin(GL_QUADS);
-        glVertex2f(-1.0f, -1.0f); glVertex2f( 1.0f, -1.0f);
-        glVertex2f( 1.0f,  1.0f); glVertex2f(-1.0f,  1.0f);
+        glVertex2f(-1.0f, -1.0f);
+        glVertex2f(1.0f, -1.0f);
+        glVertex2f(1.0f, 1.0f);
+        glVertex2f(-1.0f, 1.0f);
         glEnd();
         thunderFlashAlpha *= 0.76f;
-        if (thunderFlashAlpha < 0.01f) thunderFlashAlpha = 0.0f;
+        if (thunderFlashAlpha < 0.01f)
+            thunderFlashAlpha = 0.0f;
     }
 
-    if (!lightningVisible || lgSegCount == 0) return;
+    if (!lightningVisible || lgSegCount == 0)
+        return;
 
     // Current scale factor (0 = invisible, 1 = full size)
     float sc = thunderScaling ? thunderScale / fmaxf(thunderScaleMax, 0.001f)
                               : 1.0f;
-    if (sc <= 0.001f) return;
+    if (sc <= 0.001f)
+        return;
 
     float alpha = lightningTimer;
 
     float outerW = (4.0f + thunderIntensity * 4.0f) * sc;
-    float midW   = (2.0f + thunderIntensity * 2.0f) * sc;
-    float coreW  = (0.8f + thunderIntensity * 0.7f) * sc;
+    float midW = (2.0f + thunderIntensity * 2.0f) * sc;
+    float coreW = (0.8f + thunderIntensity * 0.7f) * sc;
 
     // Push a scale matrix around the bolt's start point so it
     // appears to "shoot out" from the sky, growing toward the ground.
@@ -7673,8 +8055,8 @@ static void drawThunderstorm()
     }
 
     // ── GROUND IMPACT GLOW ──
-    float gx  = lgSegX[lgSegCount];
-    float gy  = lgSegY[lgSegCount];
+    float gx = lgSegX[lgSegCount];
+    float gy = lgSegY[lgSegCount];
     float gRx = (0.06f + thunderIntensity * 0.055f) * sc;
     float gRy = gRx * 0.40f;
     glBegin(GL_TRIANGLE_FAN);
@@ -7694,30 +8076,31 @@ static void drawThunderstorm()
 
 static void updateThunderstorm(float dt)
 {
-    if (!thunderMode) return;
+    if (!thunderMode)
+        return;
 
     // ── Scale animation update (grow then shrink) ──
     if (thunderScaling)
     {
-        const float GROW_SPEED   = 6.0f;
+        const float GROW_SPEED = 6.0f;
         const float SHRINK_SPEED = 3.5f;
 
-        if (thunderScaleDir > 0.0f)       // growing phase
+        if (thunderScaleDir > 0.0f) // growing phase
         {
             thunderScale += GROW_SPEED * dt;
             if (thunderScale >= thunderScaleMax)
             {
-                thunderScale    = thunderScaleMax;
+                thunderScale = thunderScaleMax;
                 thunderScaleDir = -1.0f;
             }
         }
-        else                              // shrinking phase
+        else // shrinking phase
         {
             thunderScale -= SHRINK_SPEED * dt;
             if (thunderScale <= 0.0f)
             {
-                thunderScale     = 0.0f;
-                thunderScaling   = false;
+                thunderScale = 0.0f;
+                thunderScaling = false;
                 lightningVisible = false;
             }
         }
@@ -7734,13 +8117,13 @@ static void updateThunderstorm(float dt)
         float ey = -0.65f + fwRand() * 0.35f;
         generateLightningBolt(sx, sy, ex, ey, thunderIntensity);
 
-        lightningVisible  = true;
-        lightningTimer    = 1.0f;
+        lightningVisible = true;
+        lightningTimer = 1.0f;
 
-        thunderScaleMax  = 1.0f;
-        thunderScale     = 0.0f;
-        thunderScaleDir  = 1.0f;
-        thunderScaling   = true;
+        thunderScaleMax = 1.0f;
+        thunderScale = 0.0f;
+        thunderScaleDir = 1.0f;
+        thunderScaling = true;
 
         thunderFlashAlpha = 0.10f + thunderIntensity * 0.10f;
         thunderTimer = 2.0f + fwRand() * 2.5f;
@@ -7751,7 +8134,7 @@ static void updateThunderstorm(float dt)
         lightningTimer -= dt * 3.5f;
         if (lightningTimer <= 0.0f)
         {
-            lightningTimer   = 0.0f;
+            lightningTimer = 0.0f;
             lightningVisible = false;
         }
     }
@@ -7887,7 +8270,7 @@ void display()
             drawSunAt(_sx, _sy);
         }
         drawMoon();
-         // 2.5 Draw clouds (spring only) ← ADD THIS SECTION
+        // 2.5 Draw clouds (spring only) ← ADD THIS SECTION
         drawSpringClouds();
 
         // 3. Ground — dynamic colour
@@ -8025,7 +8408,7 @@ void display()
     }
 
     // ── FIREWORKS (drawn last, on top of everything) ──
-    drawThunderstorm();  // [Sadia] — lightning + flash + impact
+    drawThunderstorm(); // [Sadia] — lightning + flash + impact
     drawFWFlash();
     drawFireworks();
 
@@ -8054,12 +8437,12 @@ void init()
 
     initPetals();
     initRoadTraffic();
-    initSpringClouds();  // [Prottoy]
+    initSpringClouds(); // [Prottoy]
 
     // Season + player setup
-    initAutumn();  // [Emad]
-    initWinter();  // [Shajmin]
-    initPlayers(); // [Shajmin]
+    initAutumn();    // [Emad]
+    initWinter();    // [Shajmin]
+    initPlayers();   // [Shajmin]
     initFireworks(); // Initialize fireworks system
 }
 void update(int value)
@@ -8090,7 +8473,7 @@ void update(int value)
     {
         for (int i = 0; i < MAX_RAIN; i++)
         {
-            rainY[i] -= rainSpeed[i] * rainSpeedMult;  // [Sadia] adjustable via p/o
+            rainY[i] -= rainSpeed[i] * rainSpeedMult; // [Sadia] adjustable via p/o
             if (rainY[i] < -1.0f)
             {
                 rainY[i] = 1.0f;
@@ -8114,9 +8497,21 @@ void update(int value)
     // Move the bouncing players (Shajmin)
     updatePlayers();
 
+    // ── Parking arm easing animation [Shajmin] ──
+    // Each tick, slide the current angle a fraction of the way towards
+    // the target.  This produces a smooth open/close motion instead
+    // of an instant jump, so the rotation is clearly noticeable.
+    {
+        float diff = parkingArmTarget - parkingArmAngle;
+        if (fabsf(diff) > 0.25f)
+            parkingArmAngle += diff * 0.12f; // 12% of the gap per tick [Shajmin]
+        else
+            parkingArmAngle = parkingArmTarget; // snap when essentially there
+    }
+
     // ── Update fireworks (55ms per tick) ──
     updateFireworks(0.055f);
-    updateThunderstorm(0.055f);  // [Sadia]
+    updateThunderstorm(0.055f); // [Sadia]
 
     glutPostRedisplay();
     glutTimerFunc(55, update, 0);
