@@ -17,7 +17,7 @@
 //    • D-Building (main AIUB academic building, 10 floors, lounges)
 //    • SPRING MODE ('s') – falling petals, cherry blossoms
 //    • AUTUMN MODE ('a') – falling leaves      [Emad]
-//    • WINTER MODE ('w') – falling snow                  [Shajmin]
+//    • WINTER MODE ('w') – falling snow
 //    • RAINY MODE ('r') – raindrops, umbrellas, gray sky, wet ground
 //    • SUMMER MODE ('g') – mangoes, jackfruits, heat haze, stall, birds
 //    • FIREWORKS MODE ('f') – spectacular fireworks display!
@@ -32,19 +32,7 @@
 //                    — applied with glScalef() in drawAutumn()
 //    • ROTATION    : autumn leaves spin as they fall — per-leaf angle
 //                    auto-advances each tick, applied via glRotatef()
-//
-//   [Shajmin]:
-//    • TRANSLATION : sports player speed via 'h' (slower) and 'j' (faster)
-//                    — multiplier applied in updatePlayers() to every
-//                      basketball and football player                    [Shajmin]
-//    • SCALING     : winter snowflake size via 'v' (smaller) and 'b' (larger)
-//                    — applied with glScalef() in drawWinter()           [Shajmin]
-//    • ROTATION    : parking lot entry arm via 'u' (open) and 'i' (close)
-//                    — applied with glRotatef() in drawParkingArm(),
-//                      eases smoothly between 0° (horizontal/closed) and
-//                      ~85° (vertical/open) so the rotation is clearly
-//                      visible across multiple frames                    [Shajmin]
-//
+
 //  Draw order (painter's algorithm, back → front):
 //    1. Sky
 //    2. Sun
@@ -119,49 +107,38 @@ static float leafScale = 1.0f;      // 1.0 = default leaf size
 static float leafAngle[MAX_LEAVES]; // current rotation of each leaf (deg)
 static float leafSpin[MAX_LEAVES];  // per-leaf rotation speed (deg/tick)
 
-// ──  Dynamic transformation state (Shajmin) ───────────────────
-// These globals back three additional required transformations:
-//   • playerSpeedMult — translation scalar for sports players.
-//                       Adjusted via 'h' (slower) and 'j' (faster).
-//                       Applied inside updatePlayers() to every
-//                       basketball and football player.
-//   • snowScale       — scaling factor applied to every snowflake
-//                       in winter mode via glScalef(). Adjusted via
-//                       'v' (smaller) and 'b' (larger).
-//   • parkingArmAngle — current rotation (deg) of the parking lot
-//                       entry arm. 0 = closed (horizontal), ~85 =
-//                       open (nearly vertical). Eased towards
-//                       parkingArmTarget every tick so the rotation
-//                       animates smoothly and is clearly visible.
-static float playerSpeedMult = 1.0f;  // 1.0 = default player speed   [Shajmin]
-static float snowScale = 1.0f;        // 1.0 = default snowflake size [Shajmin]
-static float parkingArmAngle = 0.0f;  // current arm angle (deg)      [Shajmin]
-static float parkingArmTarget = 0.0f; // target arm angle (deg)       [Shajmin]
+// Dynamic transformation state (Shajmin)
+// playerSpeedMult — translation scalar for sports players. Applied inside updatePlayers() to every basketball and football player.
+// snowScale — scaling factor applied to every snowflake in winter mode via glScalef().
+// parkingArmAngle — 0 = closed (horizontal), ~85 = open
+static float playerSpeedMult = 1.0f;  // 1.0 = default player speed
+static float snowScale = 1.0f; // 1.0 = default snowflake size
+static float parkingArmAngle = 0.0f;  // current arm angle (deg)
+static float parkingArmTarget = 0.0f; // target arm angle (deg)
 
-// ── Winter season state (Shajmin) ─────────────────────────────────
-// Winter = white snowflakes falling slowly.
+// Winter season state (Shajmin)
 #define MAX_SNOW 200
-static bool winterMode = false;   // toggled by pressing 'w'
-static float snowX[MAX_SNOW];     // X position of each snowflake
-static float snowY[MAX_SNOW];     // Y position of each snowflake
+static bool winterMode = false; // toggled by pressing 'w'
+static float snowX[MAX_SNOW]; // X position of each snowflake
+static float snowY[MAX_SNOW]; // Y position of each snowflake
 static float snowSpeed[MAX_SNOW]; // how fast it falls
 
 static bool summerMode = false; // toggled by pressing 'g'
 
-// ── Moving sports players (Shajmin) ───────────────────────────────
+// Moving sports players (Shajmin)
 // 4 basketball players + 6 football players. Each one has its own
 // position (X,Y) and velocity (VX,VY). On every tick, position +=
 // velocity. When a player hits a wall, that velocity is reversed.
 #define BBALL_COUNT 4
 #define SOCCER_COUNT 6
 
-static float bballX[BBALL_COUNT];  // basketball player X
-static float bballY[BBALL_COUNT];  // basketball player Y
+static float bballX[BBALL_COUNT]; // basketball player X
+static float bballY[BBALL_COUNT]; // basketball player Y
 static float bballVX[BBALL_COUNT]; // basketball player X velocity
 static float bballVY[BBALL_COUNT]; // basketball player Y velocity
 
-static float soccerX[SOCCER_COUNT];  // football player X
-static float soccerY[SOCCER_COUNT];  // football player Y
+static float soccerX[SOCCER_COUNT]; // football player X
+static float soccerY[SOCCER_COUNT]; // football player Y
 static float soccerVX[SOCCER_COUNT]; // football player X velocity
 static float soccerVY[SOCCER_COUNT]; // football player Y velocity
 
@@ -1820,8 +1797,7 @@ static void drawRightAnnex(float mainRight, float by, float bh, float fH, int NF
     glEnd();
 }
 
-// ================================================================
-//  ANNEX-9 FOREGROUND BUILDING                            [Shajmin]
+//  ANNEX-9 FOREGROUND BUILDING [Shajmin]
 //
 //  The whole building is first designed inside a local box from
 //  (-0.85, -0.42) at the bottom-left corner to (+0.85, +0.80) at
@@ -1829,16 +1805,8 @@ static void drawRightAnnex(float mainRight, float by, float bh, float fH, int NF
 //  After everything is drawn at that big size, glScalef shrinks
 //  it down and glTranslatef moves it into the correct spot in
 //  the final scene.
-//
-//  This makes the coordinates inside drawAnnex9() very easy to
-//  read, because every number is in the simple -1..+1 range.
-// ================================================================
 
-// ----------------------------------------------------------------
-//  a9Rect  — draws a filled rectangle from (x1,y1) to (x2,y2)
-//  Colour must be set with glColor* BEFORE calling this function.
-//  GL_QUADS expects 4 vertices, given clockwise or anti-clockwise.
-// ----------------------------------------------------------------
+//  a9Rect — draws a filled rectangle from (x1,y1) to (x2,y2)
 static void a9Rect(float x1, float y1, float x2, float y2)
 {
     glBegin(GL_QUADS);
@@ -1849,14 +1817,12 @@ static void a9Rect(float x1, float y1, float x2, float y2)
     glEnd();
 }
 
-// ----------------------------------------------------------------
 //  a9Window  — draws ONE single window (frame + glass)
 //
 //  Step 1: draws an outer grey rectangle = the window frame
 //  Step 2: draws a slightly smaller blue rectangle inside
 //          the frame = the glass.  "pad" is the thickness of
 //          the frame on every side.
-// ----------------------------------------------------------------
 static void a9Window(float x, float y, float w, float h)
 {
     const float pad = 0.014f; // frame thickness on each side
@@ -1870,7 +1836,6 @@ static void a9Window(float x, float y, float w, float h)
     a9Rect(x + pad, y + pad, x + w - pad, y + h - pad);
 }
 
-// ----------------------------------------------------------------
 //  drawAnnex9  — main function that builds Annex-9
 //
 //  IMPORTANT: everything drawn between glPushMatrix() and
@@ -1977,7 +1942,6 @@ static void drawAnnex9()
     glPopMatrix(); // restore the matrix so other drawings are normal
 }
 
-// ================================================================
 //  PARKED CARS IN THE LOT                                 [Shajmin]
 //
 //  Each parked car is first designed inside a local box from
@@ -1987,15 +1951,12 @@ static void drawAnnex9()
 //  push / translate / scale / draw / pop for us.  This way every
 //  car is drawn the same way and we just place them by giving
 //  centre coordinates.
-// ================================================================
 
-// ----------------------------------------------------------------
 //  drawCarLocal  — draws ONE car inside the local -1..+1 box.
 //  Colour is passed in so the same code can draw any car colour.
 //  The car faces "down" the page (windscreen at the bottom of
 //  the local box) so the bay-row at the top will look like a car
 //  parked nose-out.
-// ----------------------------------------------------------------
 static void drawCarLocal(unsigned char r, unsigned char g, unsigned char b)
 {
     // Body — big coloured rectangle filling most of the local box
@@ -2093,14 +2054,12 @@ static void drawParkedCars()
     // (rightmost two bottom-row spaces left empty — no cars there)
 }
 
-// ================================================================
 //  PARKING LOT BOOTH                                      [Shajmin]
 //
 //  The security booth that sits at the entrance of the parking
 //  lot.  Same local-design pattern as Annex-9: drawn inside the
 //  parking lot's local -1..+1 box (so it lines up with the lot),
 //  then scaled and translated into place.
-// ================================================================
 static void drawParkingExitBuilding()
 {
     glPushMatrix();
@@ -2135,23 +2094,14 @@ static void drawParkingExitBuilding()
     glPopMatrix();
 }
 
-// ================================================================
 //  PARKING LOT ENTRY ARM (boom barrier)                  [Shajmin]
 //
 //  A single red quad that pivots open/closed at the entrance of
 //  the parking lot.
-//    • parkingArmAngle =  0°  →  closed (horizontal)
-//    • parkingArmAngle ≈ 85°  →  open   (nearly vertical)
+//  parkingArmAngle =  0° → closed (horizontal)
+//  parkingArmAngle ≈ 85° → open (nearly vertical)
 //
-//  The 'u' (open) and 'i' (close) keys set parkingArmTarget; the
-//  current angle eases towards the target in update() so the
-//  rotation animates smoothly across many frames instead of an
-//  instant snap — making the rotation clearly visible.
-//
-//  Key note: originally planned as 'o' (open) / 'p' (close), but
-//  those keys are taken by Sadia's rain-speed controls, so they
-//  were remapped to 'u' / 'i' (adjacent on the keyboard).
-// ================================================================
+//  The 'u' (open) and 'i' (close) keys set parkingArmTarget;
 static void drawParkingArm() // [Shajmin]
 {
     // Pivot point sits just to the right of the security booth.
@@ -2164,7 +2114,7 @@ static void drawParkingArm() // [Shajmin]
     // then draw the arm extending to the right from the origin.
     glPushMatrix();
     glTranslatef(pivotX, pivotY, 0.0f);
-    glRotatef(parkingArmAngle, 0.0f, 0.0f, 1.0f); // dynamic rotation [Shajmin]
+    glRotatef(parkingArmAngle, 0.0f, 0.0f, 1.0f); // [Shajmin]
 
     glColor3ub(220, 50, 50); // red
     glBegin(GL_QUADS);
@@ -6227,17 +6177,12 @@ static void drawAutumnTint() // [Emad]
     glEnd();
 }
 
-// ================================================================
-//  WINTER SEASON — falling snow                         [Shajmin]
+//  WINTER SEASON — falling snow [Shajmin]
 //
 //  Pool-of-particles pattern, but white round dots instead of blue lines,
 //  and slightly slower so the snow looks like it's gently drifting.
-// ================================================================
 
-// ----------------------------------------------------------------
-//  initWinter  — random starting position and speed for each
-//  snowflake.
-// ----------------------------------------------------------------
+//  initWinter  — random starting position and speed for each snowflake.
 static void initWinter() // [Shajmin]
 {
     for (int i = 0; i < MAX_SNOW; i++)
@@ -6248,9 +6193,7 @@ static void initWinter() // [Shajmin]
     }
 }
 
-// ----------------------------------------------------------------
 //  drawWinter  — draw all the snowflakes as tiny white squares.
-// ----------------------------------------------------------------
 static void drawWinter() // [Shajmin]
 {
     glColor3ub(255, 255, 255); // white snow
@@ -6268,9 +6211,7 @@ static void drawWinter() // [Shajmin]
     }
 }
 
-// ----------------------------------------------------------------
 //  updateWinter  — fall down. Respawn at the top when off-screen.
-// ----------------------------------------------------------------
 static void updateWinter() // [Shajmin]
 {
     for (int i = 0; i < MAX_SNOW; i++)
@@ -6284,10 +6225,8 @@ static void updateWinter() // [Shajmin]
     }
 }
 
-// ----------------------------------------------------------------
 //  drawWinterSky  — pale grey-white winter sky.  Darkens at
 //  night through the same day/night blend used everywhere else.
-// ----------------------------------------------------------------
 static void drawWinterSky() // [Shajmin]
 {
     float db = getDayBlend();
@@ -6313,10 +6252,8 @@ static void drawWinterSky() // [Shajmin]
     glEnd();
 }
 
-// ----------------------------------------------------------------
 //  drawWinterGround  — snowy white ground.  Stays whitish even
 //  at night (snow reflects light) but dims a bit.
-// ----------------------------------------------------------------
 static void drawWinterGround() // [Shajmin]
 {
     float db = getDayBlend();
@@ -6336,11 +6273,9 @@ static void drawWinterGround() // [Shajmin]
     glEnd();
 }
 
-// ----------------------------------------------------------------
 //  drawWinterTint  — soft white overlay on top of the whole
 //  canvas.  Gives trees and buildings a "snow has settled"
 //  look without touching their code.
-// ----------------------------------------------------------------
 static void drawWinterTint() // [Shajmin]
 {
     glColor4ub(220, 230, 240, 65); // pale icy blue, low alpha
@@ -6352,12 +6287,10 @@ static void drawWinterTint() // [Shajmin]
     glEnd();
 }
 
-// ----------------------------------------------------------------
 //  drawWinterRoadSnow  — paints a translucent white strip on top
 //  of the road / footpath area, so the asphalt looks covered in
 //  snow.  Drawn AFTER drawRoadAndPlayground so it sits over the
 //  asphalt.
-// ----------------------------------------------------------------
 static void drawWinterRoadSnow() // [Shajmin]
 {
     glColor4ub(245, 248, 252, 200); // mostly opaque white
@@ -6369,21 +6302,17 @@ static void drawWinterRoadSnow() // [Shajmin]
     glEnd();
 }
 
-// ================================================================
 //  MOVING PLAYERS — bounce inside the courts             [Shajmin]
 //
 //  Set up starting positions and velocities for every player
 //  once at program start, and update them every tick.
-// ================================================================
 
-// ----------------------------------------------------------------
 //  initPlayers  — set the starting position and a small velocity
 //  for each player on both fields.
 //
 //  Court bounds:
 //     Basketball : X  -0.10  →  +0.35     Y  -0.708  →  -0.373
 //     Football   : X  +0.35  →  +0.95     Y  -0.708  →  -0.373
-// ----------------------------------------------------------------
 static void initPlayers() // [Shajmin]
 {
     // Basketball players (4 of them, just place them inside the court)
@@ -6431,15 +6360,13 @@ static void initPlayers() // [Shajmin]
     soccerVY[5] = -0.0030f;
 }
 
-// ----------------------------------------------------------------
 //  updatePlayers  — move every player by its velocity, and bounce
 //  off the walls of its court. Bouncing means: if the player is
 //  about to go past a wall, flip the relevant velocity sign so
 //  it heads the other way.
-// ----------------------------------------------------------------
 static void updatePlayers() // [Shajmin]
 {
-    // ---- Basketball court bounds (the WHITE lines, not the outer edge) ----
+    // Basketball court bounds
     // The white outline is drawn at 0.016 inside the court rectangle,
     // so we use those tightened values to keep the players inside it.
     float bbLeft = -0.084f;   // -0.10 + 0.016
@@ -6450,8 +6377,7 @@ static void updatePlayers() // [Shajmin]
     for (int i = 0; i < BBALL_COUNT; i++)
     {
         // 'h' / 'j' keys scale the
-        // per-tick displacement without touching the raw velocity, so
-        // bouncing still works.
+        // per-tick displacement without touching the raw velocity, so bouncing still works.
         bballX[i] += bballVX[i] * playerSpeedMult; // [Shajmin]
         bballY[i] += bballVY[i] * playerSpeedMult; // [Shajmin]
 
@@ -6514,7 +6440,6 @@ static void updatePlayers() // [Shajmin]
     }
 }
 
-// ================================================================
 //  MOVING PLAYERS ON THE FIELDS                          [Shajmin]
 //
 //  Players on the basketball court and football pitch that
@@ -6526,15 +6451,12 @@ static void updatePlayers() // [Shajmin]
 //  Each player is a tiny figure: shorts rectangle, shirt
 //  rectangle, head circle.  Drawn with a small helper so the
 //  same code is reused for every player.
-// ================================================================
 
-// ----------------------------------------------------------------
 //  drawPlayer  — draws ONE standing player at world (x, y).
 //
 //  shirtR/G/B    : colour of the shirt and arms
 //  shortsR/G/B   : colour of the shorts
 //  Head colour is a fixed skin tone for all players.
-// ----------------------------------------------------------------
 static void drawPlayer(float x, float y,
                        unsigned char shirtR, unsigned char shirtG, unsigned char shirtB,
                        unsigned char shortsR, unsigned char shortsG, unsigned char shortsB)
@@ -6561,17 +6483,15 @@ static void drawPlayer(float x, float y,
     diskFan(x, y + 0.028f, 0.008f, 0.009f, 10, 215, 175, 128);
 }
 
-// ----------------------------------------------------------------
 //  drawSportsPlayers  — places every player on the courts.
 //  No loops over arrays: each player is one direct call.
 //
 //  Basketball court spans X from about -0.10 to +0.35.
 //  Football pitch    spans X from about  +0.35 to +0.95.
 //  Both use Y from about -0.708 (bottom) to -0.373 (top).
-// ----------------------------------------------------------------
 static void drawSportsPlayers() // [Shajmin]
 {
-    // ---- Basketball court (red team vs blue team) ----
+    // Basketball court (red team vs blue team)
     // Players 0 and 2 are red, 1 and 3 are blue. Position comes
     // from the bballX[] / bballY[] arrays (moved each tick).
     drawPlayer(bballX[0], bballY[0], 200, 40, 40, 230, 230, 235); // red
@@ -6579,7 +6499,7 @@ static void drawSportsPlayers() // [Shajmin]
     drawPlayer(bballX[2], bballY[2], 200, 40, 40, 230, 230, 235); // red
     drawPlayer(bballX[3], bballY[3], 38, 70, 190, 230, 230, 235); // blue
 
-    // ---- Football pitch (green team vs yellow team) ----
+    // Football pitch (green team vs yellow team)
     // Even index = green, odd = yellow. Position from soccerX[] / soccerY[].
     drawPlayer(soccerX[0], soccerY[0], 38, 140, 48, 22, 22, 24);  // green
     drawPlayer(soccerX[1], soccerY[1], 210, 160, 30, 22, 22, 24); // yellow
@@ -7006,7 +6926,7 @@ void keyboard(unsigned char key, int x, int y)
             leafScale = 4.0f; // cap at 4x default
         break;
 
-    // ── Dynamic translation: sports player speed [Shajmin] ──
+    // Dynamic translation: sports player speed [Shajmin]
     // 'h' slows every basketball + football player down.
     // 'j' speeds them up.  Multiplier is applied inside updatePlayers().
     case 'h': // [Shajmin]
@@ -7021,7 +6941,7 @@ void keyboard(unsigned char key, int x, int y)
             playerSpeedMult = 4.0f; // cap at 4x default
         break;
 
-    // ── Dynamic scaling: winter snowflake size [Shajmin] ──
+    // Dynamic scaling: winter snowflake size [Shajmin]
     // 'v' shrinks every snowflake, 'b' grows them.  Read inside
     // drawWinter() and passed straight to glScalef().
     case 'v': // [Shajmin]
@@ -7036,7 +6956,7 @@ void keyboard(unsigned char key, int x, int y)
             snowScale = 3.0f; // cap at 3x default
         break;
 
-    // ── Dynamic rotation: parking lot entry arm [Shajmin] ──
+    // Dynamic rotation: parking lot entry arm [Shajmin]
     // 'u' tells the arm to open  (target ≈ 85°, points up).
     // 'i' tells the arm to close (target =  0°, points right).
     // The arm eases towards parkingArmTarget every tick in update(),
@@ -8230,7 +8150,7 @@ void display()
         drawMoon();
         drawAutumnGround();
     }
-    // ── WINTER SEASON (pale grey sky, white snowy ground) ── [Shajmin]
+    // WINTER SEASON (pale grey sky, white snowy ground) [Shajmin]
     else if (winterMode)
     {
         drawWinterSky();
@@ -8280,7 +8200,7 @@ void display()
     // 4. Road, football field, basketball court [Prottoy]
     drawRoadAndPlayground();
 
-    // ── Winter snow on top of the road / footpath area ── [Shajmin]
+    // Winter snow on top of the road / footpath area [Shajmin]
     if (winterMode)
     {
         drawWinterRoadSnow();
@@ -8401,7 +8321,7 @@ void display()
         drawAutumn();
     }
 
-    // ── Falling snow (only in winter mode, drawn on top of everything) ── [Shajmin]
+    // Falling snow (only in winter mode, drawn on top of everything) [Shajmin]
     if (winterMode)
     {
         drawWinter();
@@ -8441,8 +8361,8 @@ void init()
 
     // Season + player setup
     initAutumn();    // [Emad]
-    initWinter();    // [Shajmin]
-    initPlayers();   // [Shajmin]
+    initWinter(); // [Shajmin]
+    initPlayers(); // [Shajmin]
     initFireworks(); // Initialize fireworks system
 }
 void update(int value)
@@ -8497,10 +8417,7 @@ void update(int value)
     // Move the bouncing players (Shajmin)
     updatePlayers();
 
-    // ── Parking arm easing animation [Shajmin] ──
-    // Each tick, slide the current angle a fraction of the way towards
-    // the target.  This produces a smooth open/close motion instead
-    // of an instant jump, so the rotation is clearly noticeable.
+    //  Parking arm easing animation [Shajmin]
     {
         float diff = parkingArmTarget - parkingArmAngle;
         if (fabsf(diff) > 0.25f)
