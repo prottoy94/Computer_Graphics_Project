@@ -86,6 +86,28 @@ Built the parking lot in front of Annex-9, including a set of static parked cars
 
 Implemented moving sports players that bounce around inside the courts — 4 basketball players on the basketball court and 6 football players on the football field. Each player carries its own position and velocity, reverses on wall contact, and updates every frame to give the sports facilities a lively, animated feel.
 
+#👤 Contribution Log — Zinedine Zidane Khan ☀️ Seasonal Development — Summer
+
+Designed and implemented the Summer season scenario, activated by pressing 'g'. The system introduces a vibrant summer atmosphere with animated environmental objects, interactive controls, and dynamic OpenGL transformations integrated into the AIUB campus scene.
+
+🏖️ Summer Environment Additions
+
+Implemented a coconut stall with a rotating 4-blade ceiling fan positioned above the canopy, creating a lively roadside summer environment. Added a red-and-white striped beach umbrella on the footpath area along with an elliptical projected shadow beneath it for improved visual realism.
+
+Designed and implemented a moving ice cream cart containing wheels and a cone sign that continuously travels across the footpath using dynamic translation animation.
+
+Added a flying diamond-shaped kite in the upper sky with a catenary string and ribbon tail to enhance the seasonal atmosphere and environmental motion.
+
+🎮 Dynamic Interactivity & Controls
+
+Feature -> Key Binding
+
+Summer season -> G
+Fan rotation slower/faster -> 1 and 2
+Umbrella scaling smaller/larger -> 3 and 4
+Ice cream cart slower/faster -> 5 and 6
+Sun selection ring toggle -> Left Mouse Click
+
 
 #👤 Contribution Log — Sadia
 🌧️ Seasonal Development — Rainy
